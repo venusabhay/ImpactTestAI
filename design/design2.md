@@ -1,4 +1,4 @@
-Absolutely. If I were designing this as a product from scratch in 2026, I would make the **Change Intelligence Engine** the core differentiator rather than the LLM itself. The LLM becomes one component of a larger, deterministic platform.
+**Change Intelligence Engine** the core differentiator rather than the LLM itself. The LLM becomes one component of a larger, deterministic platform.
 
 # Project Vision
 
