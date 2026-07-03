@@ -1,6 +1,8 @@
-AI Change Impact Analysis & Autonomous API Testing Platform, where the LLM is responsible for reasoning and orchestration, while deterministic tools perform code analysis, API discovery, test execution, and reporting. This keeps the system reliable and reduces unnecessary LLM calls.
+I would design this as an **AI Change Impact Analysis & Autonomous API Testing Platform**, where the LLM is responsible for reasoning and orchestration, while deterministic tools perform code analysis, API discovery, test execution, and reporting. This keeps the system reliable and reduces unnecessary LLM calls.
 
-High-Level Architecture
+# High-Level Architecture
+
+```text
                          Developer Raises PR
                                   │
                                   ▼
@@ -40,17 +42,23 @@ High-Level Architecture
                Reporting & PR Comment Agent
                          │
         HTML Report + GitHub Comment + Slack
-Agent Responsibilities
-1. PR Analysis Agent
+```
 
-Input
+---
 
-PR URL
-Git diff
-Commit history
+# Agent Responsibilities
 
-Output
+## 1. PR Analysis Agent
 
+**Input**
+
+* PR URL
+* Git diff
+* Commit history
+
+**Output**
+
+```json
 {
   "changedFiles": [
     "UserController.java",
@@ -61,15 +69,19 @@ Output
     "validateAddress"
   ]
 }
+```
 
 This agent performs no reasoning beyond collecting structured information.
 
-2. Code Graph Builder
+---
+
+## 2. Code Graph Builder
 
 This is the heart of the system.
 
 Instead of looking only at changed files, it builds a graph such as:
 
+```text
 UserController
       │
       ▼
@@ -80,24 +92,28 @@ UserRepository
       │
       ▼
 Database
+```
 
 It also records:
 
-method calls
-inheritance
-interfaces
-annotations
-dependency injection
-package dependencies
+* method calls
+* inheritance
+* interfaces
+* annotations
+* dependency injection
+* package dependencies
 
 Think of this as a lightweight knowledge graph of your codebase.
 
-3. API Catalog Builder
+---
+
+## 3. API Catalog Builder
 
 This creates a searchable map of all APIs.
 
 Example:
 
+```text
 GET /users/{id}
 
 ↓
@@ -111,35 +127,43 @@ UserService.getUser()
 ↓
 
 UserRepository.find()
+```
 
 Now every endpoint is connected to the underlying implementation.
 
-Enhancement: API Dependency Graph
+---
+
+# Enhancement: API Dependency Graph
 
 This is the feature I'd invest in because it makes the system much smarter.
 
 Example:
 
+```text
                     UserService
                    /     |      \
                   /      |       \
                  ▼       ▼        ▼
          GET /users   POST/users   PATCH/users
+```
 
-If UserService changes, the graph immediately tells the agent that all three endpoints are potentially impacted.
+If `UserService` changes, the graph immediately tells the agent that all three endpoints are potentially impacted.
 
 Without this graph, you'd only detect changes in the controller layer and could easily miss affected APIs.
 
-4. Change Impact Analysis Agent
+---
+
+## 4. Change Impact Analysis Agent
 
 Inputs:
 
-Git diff
-Code graph
-API graph
+* Git diff
+* Code graph
+* API graph
 
 Reasoning:
 
+```
 PR modified:
 
 validateAddress()
@@ -163,9 +187,11 @@ POST /users
 PUT /users
 
 PATCH /users
+```
 
 Output
 
+```json
 {
   "affectedApis": [
     "POST /users",
@@ -173,7 +199,11 @@ Output
     "PATCH /users"
   ]
 }
-5. Risk Analysis Agent
+```
+
+---
+
+## 5. Risk Analysis Agent
 
 Not every change deserves the same level of testing.
 
@@ -181,32 +211,37 @@ The agent calculates risk.
 
 Example
 
-Change	Risk
-Documentation	Low
-Logging	Low
-Validation	Medium
-Business Logic	High
-Authentication	Critical
-Payment	Critical
+| Change         | Risk     |
+| -------------- | -------- |
+| Documentation  | Low      |
+| Logging        | Low      |
+| Validation     | Medium   |
+| Business Logic | High     |
+| Authentication | Critical |
+| Payment        | Critical |
 
 Risk determines
 
-number of tests
-negative tests
-performance checks
-security checks
-6. Test Generation Agent
+* number of tests
+* negative tests
+* performance checks
+* security checks
+
+---
+
+## 6. Test Generation Agent
 
 Uses
 
-OpenAPI
-existing tests
-business rules
-historical defects
-code changes
+* OpenAPI
+* existing tests
+* business rules
+* historical defects
+* code changes
 
 Produces
 
+```
 Positive Tests
 
 Negative Tests
@@ -220,9 +255,11 @@ Authorization Tests
 Schema Validation
 
 Regression Tests
+```
 
 Example
 
+```
 POST /users
 
 ✓ Valid user
@@ -240,26 +277,34 @@ POST /users
 ✓ Long string
 
 ✓ Empty payload
-7. Test Data Agent
+```
+
+---
+
+## 7. Test Data Agent
 
 Automatically provisions
 
-users
-accounts
-orders
-products
-tokens
+* users
+* accounts
+* orders
+* products
+* tokens
 
 using
 
-factory APIs
-DB fixtures
-synthetic data
-mock services
-8. Test Execution Agent
+* factory APIs
+* DB fixtures
+* synthetic data
+* mock services
+
+---
+
+## 8. Test Execution Agent
 
 Can execute using
 
+```
 REST Assured
 
 Karate
@@ -269,27 +314,37 @@ Playwright API
 pytest
 
 Postman
+```
 
 It runs only impacted tests.
 
 Instead of
 
+```
 1500 tests
+```
 
 it might run
 
+```
 42 tests
+```
 
 saving significant execution time.
 
-9. Result Analysis Agent
+---
+
+## 9. Result Analysis Agent
 
 Rather than simply reporting
 
+```
 FAILED
+```
 
 the agent explains
 
+```
 Failure
 
 ↓
@@ -315,13 +370,17 @@ line 143
 ↓
 
 Likely caused by missing null validation
+```
 
 This is where the LLM provides value by summarizing logs and stack traces.
 
-10. Reporting Agent
+---
+
+## 10. Reporting Agent
 
 Produces
 
+```
 PR #215
 
 Risk
@@ -362,14 +421,20 @@ NullPointerException
 Recommendation
 
 Handle missing address before mapping
+```
 
 It can automatically
 
-comment on GitHub PR
-publish HTML report
-upload artifacts
-notify Slack or Microsoft Teams
-Overall Data Flow
+* comment on GitHub PR
+* publish HTML report
+* upload artifacts
+* notify Slack or Microsoft Teams
+
+---
+
+# Overall Data Flow
+
+```text
           GitHub PR
               │
               ▼
@@ -404,31 +469,38 @@ Overall Data Flow
               │
               ▼
       Report Generation
-Recommended Technology Stack
-Layer	Technology	Why
-LLM	GPT-5.5 or a comparable coding-focused model	Strong reasoning for impact analysis, test generation, and failure summaries.
-Agent Framework	LangGraph	Supports stateful, multi-step workflows with retries and human-in-the-loop if needed.
-Language	Python	Rich AI ecosystem and excellent integration libraries.
-Git Integration	GitHub API / GitLab API	Retrieve PRs, diffs, comments, and post status checks.
-Code Parsing	Tree-sitter (multi-language), JavaParser (Java), ts-morph (TypeScript)	Build accurate code and call graphs.
-Dependency Graph Storage	Neo4j	Naturally models code relationships and enables impact traversal queries.
-Embeddings / RAG	pgvector (PostgreSQL) or a vector database	Retrieve API docs, coding standards, and previous defects as context.
-API Specification	OpenAPI/Swagger	Source of truth for endpoints, schemas, and parameters.
-Test Generation	Jinja2 templates + LLM	Ensures consistent test structure while allowing intelligent scenario creation.
-Test Execution	REST Assured (Java), pytest + requests (Python), Karate	Mature, reliable API testing frameworks.
-Test Data	Factory APIs, Testcontainers, Faker	Automated, repeatable test data provisioning.
-Coverage	JaCoCo (Java), Istanbul/NYC (JavaScript), Coverage.py (Python), plus custom endpoint coverage	Measures code and API coverage.
-CI/CD	GitHub Actions, Jenkins, GitLab CI	Trigger the workflow on every PR.
-Reporting	Allure Report + GitHub Checks API + Slack/Teams notifications	Rich reports with easy developer feedback.
-Observability	OpenTelemetry + Grafana	Monitor agent performance, execution time, and reliability.
-Why this architecture?
+```
+
+---
+
+# Recommended Technology Stack
+
+| Layer                        | Technology                                                                                    | Why                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **LLM**                      | GPT-5.5 or a comparable coding-focused model                                                  | Strong reasoning for impact analysis, test generation, and failure summaries.         |
+| **Agent Framework**          | LangGraph                                                                                     | Supports stateful, multi-step workflows with retries and human-in-the-loop if needed. |
+| **Language**                 | Python                                                                                        | Rich AI ecosystem and excellent integration libraries.                                |
+| **Git Integration**          | GitHub API / GitLab API                                                                       | Retrieve PRs, diffs, comments, and post status checks.                                |
+| **Code Parsing**             | Tree-sitter (multi-language), JavaParser (Java), ts-morph (TypeScript)                        | Build accurate code and call graphs.                                                  |
+| **Dependency Graph Storage** | Neo4j                                                                                         | Naturally models code relationships and enables impact traversal queries.             |
+| **Embeddings / RAG**         | pgvector (PostgreSQL) or a vector database                                                    | Retrieve API docs, coding standards, and previous defects as context.                 |
+| **API Specification**        | OpenAPI/Swagger                                                                               | Source of truth for endpoints, schemas, and parameters.                               |
+| **Test Generation**          | Jinja2 templates + LLM                                                                        | Ensures consistent test structure while allowing intelligent scenario creation.       |
+| **Test Execution**           | REST Assured (Java), pytest + requests (Python), Karate                                       | Mature, reliable API testing frameworks.                                              |
+| **Test Data**                | Factory APIs, Testcontainers, Faker                                                           | Automated, repeatable test data provisioning.                                         |
+| **Coverage**                 | JaCoCo (Java), Istanbul/NYC (JavaScript), Coverage.py (Python), plus custom endpoint coverage | Measures code and API coverage.                                                       |
+| **CI/CD**                    | GitHub Actions, Jenkins, GitLab CI                                                            | Trigger the workflow on every PR.                                                     |
+| **Reporting**                | Allure Report + GitHub Checks API + Slack/Teams notifications                                 | Rich reports with easy developer feedback.                                            |
+| **Observability**            | OpenTelemetry + Grafana                                                                       | Monitor agent performance, execution time, and reliability.                           |
+
+## Why this architecture?
 
 The key principle is to let each component do what it does best:
 
-Static analysis tools determine code structure and dependencies.
-Graph databases efficiently answer "what is affected?" questions.
-LLMs reason about business impact, generate meaningful test cases, and explain failures.
-Test frameworks execute requests and assertions deterministically.
-CI/CD systems orchestrate when the platform runs.
+* **Static analysis tools** determine code structure and dependencies.
+* **Graph databases** efficiently answer "what is affected?" questions.
+* **LLMs** reason about business impact, generate meaningful test cases, and explain failures.
+* **Test frameworks** execute requests and assertions deterministically.
+* **CI/CD systems** orchestrate when the platform runs.
 
 This separation keeps the platform accurate, explainable, and scalable while minimizing unnecessary LLM usage. It also makes it easier to evolve individual components as your codebase or testing needs grow.
