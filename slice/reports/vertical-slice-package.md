@@ -1,6 +1,6 @@
 # Vertical Slice — First Milestone Package
 
-**Target:** [social-media-mini](https://github.com/venusabhay/social-media-mini) (real repository, cloned locally; nothing pushed back to it)
+**Target:** [social-media-mini](https://github.com/venusabhay/social-media-mini) (real repository, cloned locally to `/Users/abhay/git-venusabhay/social-media-mini`; nothing pushed back to it)
 **Change analyzed:** a real code change made to `services/auth-service/server.js` — the `/verify` endpoint (called by both `post-service` and `user-service` on every authenticated request) was modified to add a 5-second in-memory cache of verification results, to reduce database load. This is a realistic, plausible engineering change with genuine correctness risk (a cached "valid" result could briefly outlive a token that should no longer be valid).
 **Repository access used:** source code, tests, package/dependency manifests, CI workflow definitions, commit history. No production telemetry, incident history, or business documentation was available or used.
 

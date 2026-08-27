@@ -1,6 +1,6 @@
 # Change Risk & Validation Report
 
-*Generated 2026-08-27T08:02:09.648630+00:00Z from repository at `/Users/abhay/ws_claude/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
+*Generated 2026-08-27T08:11:21.690887+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
 
 ## CHANGE
 
@@ -56,29 +56,29 @@ The changed endpoint is called by 2 other service(s): post-service, user-service
 > auth-service@1.0.0 test
 > node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit
 
-(node:28189) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(node:28849) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-PASS ./auth.test.js (12.907 s)
+PASS ./auth.test.js (16.494 s)
   Auth Service - POST /register
-    ✓ should register a new user successfully (598 ms)
-    ✓ should not register user with existing email (222 ms)
-    ✓ should not register user without required fields (41 ms)
-    ✓ should validate email format (23 ms)
+    ✓ should register a new user successfully (536 ms)
+    ✓ should not register user with existing email (264 ms)
+    ✓ should not register user without required fields (31 ms)
+    ✓ should validate email format (20 ms)
   Auth Service - POST /login
-    ✓ should login user with correct credentials (352 ms)
-    ✓ should not login with incorrect password (330 ms)
-    ✓ should not login with non-existent email (191 ms)
-    ✓ should not login without email (182 ms)
-    ✓ should not login without password (200 ms)
+    ✓ should login user with correct credentials (358 ms)
+    ✓ should not login with incorrect password (325 ms)
+    ✓ should not login with non-existent email (198 ms)
+    ✓ should not login without email (275 ms)
+    ✓ should not login without password (354 ms)
   Auth Service - POST /verify
-    ✓ should verify valid token (353 ms)
-    ✓ should reject request without token (352 ms)
-    ✓ should reject invalid token (337 ms)
+    ✓ should verify valid token (383 ms)
+    ✓ should reject request without token (344 ms)
+    ✓ should reject invalid token (422 ms)
 
 Test Suites: 1 passed, 1 total
 Tests:       12 passed, 12 total
 Snapshots:   0 total
-Time:        13.384 s
+Time:        16.784 s
 Ran all test suites.
 ```
 </details>

@@ -1,5 +1,5 @@
 {
-  "repo": "/Users/abhay/ws_claude/social-media-mini",
+  "repo": "/Users/abhay/git-venusabhay/social-media-mini",
   "base_ref": "HEAD",
   "repo_head": "b6fd0644e0929e514357a30d7c082c433530916e",
   "changed_files": [
@@ -132,7 +132,7 @@
       "result": "PASSED",
       "exit_code": 0,
       "stdout_tail": "\n> auth-service@1.0.0 test\n> node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit\n",
-      "stderr_tail": "(node:28189) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\nPASS ./auth.test.js (12.907 s)\n  Auth Service - POST /register\n    \u2713 should register a new user successfully (598 ms)\n    \u2713 should not register user with existing email (222 ms)\n    \u2713 should not register user without required fields (41 ms)\n    \u2713 should validate email format (23 ms)\n  Auth Service - POST /login\n    \u2713 should login user with correct credentials (352 ms)\n    \u2713 should not login with incorrect password (330 ms)\n    \u2713 should not login with non-existent email (191 ms)\n    \u2713 should not login without email (182 ms)\n    \u2713 should not login without password (200 ms)\n  Auth Service - POST /verify\n    \u2713 should verify valid token (353 ms)\n    \u2713 should reject request without token (352 ms)\n    \u2713 should reject invalid token (337 ms)\n\nTest Suites: 1 passed, 1 total\nTests:       12 passed, 12 total\nSnapshots:   0 total\nTime:        13.384 s\nRan all test suites.",
+      "stderr_tail": "(node:28849) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\nPASS ./auth.test.js (16.494 s)\n  Auth Service - POST /register\n    \u2713 should register a new user successfully (536 ms)\n    \u2713 should not register user with existing email (264 ms)\n    \u2713 should not register user without required fields (31 ms)\n    \u2713 should validate email format (20 ms)\n  Auth Service - POST /login\n    \u2713 should login user with correct credentials (358 ms)\n    \u2713 should not login with incorrect password (325 ms)\n    \u2713 should not login with non-existent email (198 ms)\n    \u2713 should not login without email (275 ms)\n    \u2713 should not login without password (354 ms)\n  Auth Service - POST /verify\n    \u2713 should verify valid token (383 ms)\n    \u2713 should reject request without token (344 ms)\n    \u2713 should reject invalid token (422 ms)\n\nTest Suites: 1 passed, 1 total\nTests:       12 passed, 12 total\nSnapshots:   0 total\nTime:        16.784 s\nRan all test suites.",
       "classification": "N/A"
     }
   ],
@@ -140,5 +140,5 @@
     "decision": "REQUIRE_ADDITIONAL_VALIDATION",
     "reason": "Risk is HIGH and the only available automated validation does not directly exercise the changed code path. Require additional (likely manual or cross-service) validation before proceeding."
   },
-  "generated_at": "2026-08-27T08:02:09.649478+00:00"
+  "generated_at": "2026-08-27T08:11:21.692580+00:00"
 }

@@ -29,7 +29,7 @@ Produce an explainable decision
 
 ## The demonstration change
 
-Target repository: [social-media-mini](https://github.com/venusabhay/social-media-mini), cloned locally — nothing was pushed back to it. A real, plausible code change was made to `services/auth-service/server.js`: the `/verify` endpoint (called by `post-service` and `user-service` on every authenticated request) was given a 5-second in-memory cache to reduce database load. This is exactly the kind of change the design was built to reason about: small, and touching a structurally central, security-adjacent path.
+Target repository: [social-media-mini](https://github.com/venusabhay/social-media-mini), cloned locally to `/Users/abhay/git-venusabhay/social-media-mini` (the canonical local location for this repo) — nothing was pushed back to it. A real, plausible code change was made to `services/auth-service/server.js`: the `/verify` endpoint (called by `post-service` and `user-service` on every authenticated request) was given a 5-second in-memory cache to reduce database load. This is exactly the kind of change the design was built to reason about: small, and touching a structurally central, security-adjacent path.
 
 ## How to reproduce
 
