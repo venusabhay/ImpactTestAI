@@ -1,3 +1,9 @@
 .DS_Store
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# CI smoke-test / pilot-run output -- generated, not part of the curated
+# demonstration record in slice/reports/.
+slice/reports/pilot-*.md
+slice/reports/pilot-*.audit.json
