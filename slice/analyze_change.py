@@ -56,13 +56,15 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+import discovery
+
 # Version of this script itself (the code/mechanics), distinct from
 # POLICY_VERSION (the risk/validation rules it implements). Bump on any
 # change to the analyzer's behavior, output shape, or CLI surface, so a
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.2.0-pilot"
+TOOL_VERSION = "0.7.0-pilot"
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -94,7 +96,88 @@ TOOL_VERSION = "0.2.0-pilot"
 #       evidence_confidence can reach HIGH (previously capped at MEDIUM).
 #       This is a change to what counts as evidence, not to how probability
 #       is estimated -- probability remains UNKNOWN per v2/v3.
-POLICY_VERSION = "repo-plus-ci-plus-cross-service-v4"
+#   v5 (ADAPT_ARCHITECTURE_DISCOVERY): replaces hardcoded services/<name>/
+#       and app.METHOD()-only discovery with evidence-based discovery (see
+#       discovery.py and slice/ARCHITECTURE_DISCOVERY_DESIGN.md): components
+#       are discovered from package.json presence at any depth; routes are
+#       discovered from any receiver.method(path, ...) call, not only
+#       `app.`; a new evidence category (MIDDLEWARE_DEPENDENCY) finds files
+#       used as middleware by routes defined elsewhere, via exported-name
+#       usage rather than a specific filename. structural_exposure_score is
+#       broadened to include routes reached via a discovered middleware
+#       dependency, not only cross-component callers -- the SAME
+#       bucket_from_score() thresholds and formula shape apply unchanged.
+#       No change to probability handling (still UNKNOWN), risk_level
+#       thresholds, or the ESCALATE/REQUIRE_ADDITIONAL_VALIDATION/ACCEPT
+#       rules in final_recommendation().
+#   v6 (ADAPT_ARCHITECTURE_DISCOVERY, held-out finding): extends source-file
+#       scanning to .ts/.tsx (discovery.SOURCE_EXTENSIONS), previously
+#       silently limited to .js/.jsx -- an inherited gap from the original
+#       JS-only prototype, found by held-out testing against a real
+#       TypeScript repository, not a deliberate scope decision. Same
+#       route/export/import regexes, applied to a broader file set; no
+#       change to any formula, threshold, or decision rule.
+#   v7 (ADAPT_ARCHITECTURE_DISCOVERY, narrow follow-up milestone): fixes two
+#       specific gaps found in the v6 held-out round, both general, neither
+#       repository-specific: (1) route/export scanning is now comment-aware
+#       (discovery.strip_comments()) -- a code-shaped example inside a
+#       comment was previously matched as a real route registration; (2)
+#       controller-method dependency tracing -- a route handler referenced
+#       as `controller.methodName` (property access, common in class-based
+#       controllers) now resolves against the controller's export the same
+#       way a bare identifier does, via discovery._resolve_arg_to_export().
+#       Also fixed the underlying _extract_middleware_args() bug that made
+#       (2) impossible: trailing `;` after a bare/dotted final-handler
+#       reference (no inline function, so no HANDLER_START_RE cut point)
+#       was never stripped, so the token never matched the identifier
+#       pattern at all. No change to any formula, threshold, or decision
+#       rule; no change to RiskAssessment/probability/risk_level semantics.
+#   v8 (ADAPT_ARCHITECTURE_DISCOVERY, narrow follow-up milestone): fixes the
+#       one gap found in the v7 held-out round: find_exported_names() did
+#       not recognize the CommonJS object-literal export shorthand
+#       (`module.exports = { getUsers, createUser }` and the equivalent
+#       explicit-key form `module.exports = { getUsers: impl }`), only ESM
+#       `export const/function/{}` and CommonJS `exports.X = ...` property
+#       assignment. Added via a general balanced-brace scan
+#       (discovery._extract_balanced()) plus a top-level-comma-aware object-
+#       literal entry parser (discovery._object_literal_export_names()) --
+#       not a special case for any file, since it recognizes the syntactic
+#       shape, not any particular property name. This also required a
+#       companion resolution fix: previously, `_resolve_arg_to_export()`
+#       only matched a dotted reference's ROOT identifier against the
+#       exported names (correct for a named/aliased import of one specific
+#       export, e.g. a class-instance singleton). The object-literal export
+#       case is the mirror image -- the LOCAL variable is an arbitrary
+#       alias for a whole-module `require(...)`, and the PROPERTY name is
+#       the actual export -- so a new, gated property-match mode was added,
+#       restricted to cases where the root is a whole-module import/require
+#       alias of the changed file specifically
+#       (discovery._whole_module_import_aliases()), not any `X.propertyName`
+#       in the codebase, to avoid false positives from unrelated files that
+#       happen to share a property name. No change to any formula,
+#       threshold, or decision rule; no change to RiskAssessment/
+#       probability/risk_level semantics.
+#   v9 (ADAPT_ARCHITECTURE_DISCOVERY, formatting-independent route
+#       detection): fixes the gap found in the v8 held-out round --
+#       find_route_registrations() required a call's receiver, method, AND
+#       its path string literal to all appear on the SAME source line,
+#       silently missing any call formatted with the path on a following
+#       line (measured 0/9 and 7/21 real routes detected in two held-out
+#       repositories before this fix). Replaced with two independent
+#       steps, see discovery.py and slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md:
+#       (1) a narrow regex finds only `receiver.method(` -- the part
+#       guaranteed to be on one line in practice; (2) the existing general-
+#       purpose _extract_balanced()/_split_top_level() helpers (already
+#       used for the v8 object-literal-export fix) read the call's
+#       arguments regardless of how many lines they span. Also subsumes
+#       and simplifies the old _extract_middleware_args() entirely (its
+#       hand-sliced, formatting-sensitive string logic, including the v7
+#       trailing-semicolon fix, is no longer needed once arguments are
+#       read via exact balanced-span splitting). No change to any formula,
+#       threshold, or decision rule; no change to RiskAssessment/
+#       probability/risk_level semantics; no change to what counts as a
+#       middleware argument (still bare/dotted identifiers only).
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v9"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
@@ -169,46 +252,6 @@ def changed_line_ranges(diff_text, path):
 # 2. Impact Assessment (evidence-based, repo-only)
 # ---------------------------------------------------------------------------
 
-def find_route_handlers(file_text):
-    """Locate Express route handlers: (method, path, start_line, end_line)."""
-    lines = file_text.splitlines()
-    handlers = []
-    pattern = re.compile(r"app\.(get|post|put|delete|patch)\(\s*[\"'`]([^\"'`]+)[\"'`]")
-    for i, line in enumerate(lines):
-        m = pattern.search(line)
-        if not m:
-            continue
-        method, path = m.group(1), m.group(2)
-        # Find the matching close of app.METHOD( ... ) by paren balance
-        start_idx = m.start()
-        depth = 0
-        end_line = i
-        started = False
-        for j in range(i, len(lines)):
-            scan_from = start_idx if j == i else 0
-            for ch in lines[j][scan_from:]:
-                if ch == "(":
-                    depth += 1
-                    started = True
-                elif ch == ")":
-                    depth -= 1
-            if started and depth <= 0:
-                end_line = j
-                break
-        handlers.append({
-            "method": method.upper(),
-            "path": path,
-            "start_line": i + 1,
-            "end_line": end_line + 1,
-        })
-    return handlers
-
-
-def service_name_from_path(repo_relative_path):
-    m = re.match(r"services/([^/]+)/", repo_relative_path)
-    return m.group(1) if m else None
-
-
 def grep_repo(repo, pattern, exclude_paths=()):
     exclude = " ".join(f"--exclude-dir={d}" for d in ["node_modules", "coverage", ".git", "dist", "build"])
     result = run(f"grep -rn -F {json.dumps(pattern)} {exclude} .", cwd=repo)
@@ -224,19 +267,37 @@ def grep_repo(repo, pattern, exclude_paths=()):
     return hits
 
 
-def find_callers(repo, route_path, own_file):
+def find_callers(repo, route_path, own_file, components):
+    # A path with no meaningful segment (e.g. the bare root route "/") is a
+    # substring of nearly everything (every URL, every filesystem path in a
+    # Dockerfile, etc.) -- literal substring search against it is unreliable
+    # regardless of which repository this runs against. This is a general
+    # robustness guard on the search mechanism, not a rule about any specific
+    # route, file, or repository: any repo with a route this generic would
+    # hit the same false-positive flood.
+    if len(route_path.strip("/")) == 0:
+        return []
     hits = grep_repo(repo, route_path, exclude_paths={own_file})
     callers = []
     for h in hits:
-        looks_like_call = bool(re.search(r"axios|fetch\(", h["snippet"]))
+        # Slightly broadened per ARCHITECTURE_DISCOVERY_DESIGN.md #4: axios
+        # and fetch( were already covered; .ajax( and XMLHttpRequest add
+        # coverage for older/alternative HTTP-call styles without narrowing
+        # or special-casing anything.
+        looks_like_call = bool(re.search(r"axios|fetch\(|\.ajax\(|XMLHttpRequest", h["snippet"]))
         callers.append({**h, "looks_like_http_call": looks_like_call,
-                         "calling_service": service_name_from_path(h["file"])})
+                         "calling_service": discovery.component_for_path(h["file"], components)})
     return callers
 
 
+TEST_FILE_SUFFIXES = tuple(f".test{ext}" for ext in discovery.SOURCE_EXTENSIONS)
+
+
 def find_test_evidence(repo, route_path):
+    if len(route_path.strip("/")) == 0:
+        return []
     hits = grep_repo(repo, route_path)
-    return [h for h in hits if h["file"].endswith(".test.js")]
+    return [h for h in hits if h["file"].endswith(TEST_FILE_SUFFIXES)]
 
 
 def test_file_is_real_cross_service(repo, test_file):
@@ -269,125 +330,171 @@ def test_file_imports_module(repo, test_file, module_basename):
     # produced false negatives (reported "does not import" for a test file
     # that plainly does) -- caught by tests/test_analyze_change.py.
     return bool(re.search(rf"""(from|require)\s*\(?['"]\.?/?{re.escape(module_basename)}['"]""", text)) \
-        or bool(re.search(rf"""(from|require)\s*\(?['"]\./{re.escape(module_basename.replace('.js',''))}['"]""", text))
+        or bool(re.search(rf"""(from|require)\s*\(?['"]\./{re.escape(discovery.strip_source_extension(module_basename))}['"]""", text))
 
 
-def build_impact_assessment(repo, change):
+def _impact_for_route(repo, components, route, defining_path, defining_service,
+                       primary_entity, affected_entities, uncertainty_sources):
+    """Shared TRANSITIVE / TEST_COVERAGE / CROSS_SERVICE_VALIDATION discovery
+    for one impacted route, regardless of whether it was reached because the
+    route itself changed (DIRECT) or because the changed file is used as
+    middleware by this route (MIDDLEWARE_DEPENDENCY) -- the caller supplies
+    `primary_entity` already tagged with the right impact_type."""
+    affected_entities.append(primary_entity)
+
+    callers = find_callers(repo, route["path"], own_file=defining_path, components=components)
+    caller_services = sorted({c["calling_service"] for c in callers
+                               if c["calling_service"] and c["calling_service"] != defining_service})
+    for cs in caller_services:
+        cs_hits = [c for c in callers if c["calling_service"] == cs]
+        affected_entities.append({
+            "entity": f"{cs} (via calls to {route['path']})",
+            "impact_type": "TRANSITIVE",
+            "confidence": "HIGH" if any(c["looks_like_http_call"] for c in cs_hits) else "MEDIUM",
+            "evidence": [{
+                "type": "STATIC_ANALYSIS",
+                "description": f"{c['file']}:{c['line']} references \"{route['path']}\" "
+                                f"{'in what looks like an HTTP call' if c['looks_like_http_call'] else '(reference found, call pattern not confirmed)'}.",
+            } for c in cs_hits],
+        })
+
+    test_hits = find_test_evidence(repo, route["path"])
+    same_service_tests = [t for t in test_hits
+                           if discovery.component_for_path(t["file"], components) == defining_service]
+    distinct_test_files = sorted({t["file"] for t in same_service_tests})
+    if distinct_test_files:
+        for test_file in distinct_test_files:
+            file_hits = [t for t in same_service_tests if t["file"] == test_file]
+            imports_module = test_file_imports_module(repo, test_file, os.path.basename(defining_path))
+            is_real_cross_service = test_file_is_real_cross_service(repo, test_file)
+
+            if is_real_cross_service:
+                affected_entities.append({
+                    "entity": f"Real cross-service validation: {test_file}",
+                    "impact_type": "CROSS_SERVICE_VALIDATION",
+                    "confidence": "HIGH",
+                    "evidence": [{
+                        "type": "TEST_EXECUTION",
+                        "description": f"{t['file']}:{t['line']} references \"{route['path']}\".",
+                    } for t in file_hits] + [{
+                        "type": "STATIC_ANALYSIS",
+                        "description": (
+                            f"{test_file} spawns a real, separate process running the changed "
+                            f"module and drives it over real HTTP (via axios), rather than an "
+                            f"in-process or mocked app -- this is direct evidence the changed "
+                            f"behavior can be, and is, exercised as dependent services actually "
+                            f"call it."
+                        ),
+                    }],
+                })
+            else:
+                affected_entities.append({
+                    "entity": f"Existing test coverage: {test_file}",
+                    "impact_type": "TEST_COVERAGE",
+                    "confidence": "MEDIUM" if imports_module else "LOW",
+                    "evidence": [{
+                        "type": "TEST_EXECUTION",
+                        "description": f"{t['file']}:{t['line']} references \"{route['path']}\".",
+                    } for t in file_hits] + [{
+                        "type": "STATIC_ANALYSIS",
+                        "description": (
+                            f"{test_file} DOES import/require the changed module directly."
+                            if imports_module else
+                            f"{test_file} does NOT import or require {os.path.basename(defining_path)} -- "
+                            f"it appears to re-implement its own test version of the route(s) instead. "
+                            f"A passing result here does not confirm the actual changed code path was exercised."
+                        ),
+                    }],
+                })
+    else:
+        uncertainty_sources.append(
+            f"No test file evidence found for {route['method']} {route['path']} in component "
+            f"'{defining_service}'."
+        )
+
+    uncertainty_sources.append(
+        f"Production call volume / exposure for {route['method']} {route['path']}: Unknown / insufficient "
+        f"evidence (no production telemetry access in this slice)."
+    )
+    uncertainty_sources.append(
+        f"Historical incident rate for this endpoint: Unknown / insufficient evidence "
+        f"(no incident-system access in this slice)."
+    )
+
+
+def build_impact_assessment(repo, change, components):
     affected_entities = []
     uncertainty_sources = []
 
     for path in change["changed_files"]:
         full_path = os.path.join(repo, path)
-        if not os.path.exists(full_path) or not path.endswith(".js"):
+        if not os.path.exists(full_path) or not discovery.is_source_file(path):
             continue
         with open(full_path, "r", errors="ignore") as f:
             file_text = f.read()
 
-        service = service_name_from_path(path)
+        service = discovery.component_for_path(path, components)
         touched_ranges = changed_line_ranges(change["diff_text_u0"], path)
-        handlers = find_route_handlers(file_text)
+        handlers = discovery.find_route_registrations(file_text)
+
+        any_relationship_found = False
 
         for h in handlers:
             overlaps = any(not (h["end_line"] < s or h["start_line"] > e) for s, e in touched_ranges)
             if not overlaps:
                 continue
-
-            evidence = [{
-                "type": "SOURCE_CODE",
-                "description": f"{path}:{h['start_line']}-{h['end_line']} defines {h['method']} {h['path']}, "
-                                f"and the diff modifies lines within that handler.",
-            }]
-
-            # Direct entity: the endpoint itself
-            direct_confidence = "HIGH"  # directly observed in the diff + file
-            affected_entities.append({
+            any_relationship_found = True
+            primary_entity = {
                 "entity": f"{service or path}: {h['method']} {h['path']}",
                 "impact_type": "DIRECT",
-                "confidence": direct_confidence,
-                "evidence": evidence,
-            })
+                "confidence": "HIGH",  # directly observed in the diff + file
+                "evidence": [{
+                    "type": "SOURCE_CODE",
+                    "description": f"{path}:{h['start_line']}-{h['end_line']} defines {h['method']} {h['path']}, "
+                                    f"and the diff modifies lines within that handler.",
+                }],
+            }
+            _impact_for_route(repo, components, h, path, service, primary_entity,
+                               affected_entities, uncertainty_sources)
 
-            # Transitive: other services calling this route path
-            callers = find_callers(repo, h["path"], own_file=path)
-            caller_services = sorted({c["calling_service"] for c in callers if c["calling_service"] and c["calling_service"] != service})
-            for cs in caller_services:
-                cs_hits = [c for c in callers if c["calling_service"] == cs]
-                affected_entities.append({
-                    "entity": f"{cs} (via calls to {h['path']})",
-                    "impact_type": "TRANSITIVE",
-                    "confidence": "HIGH" if any(c["looks_like_http_call"] for c in cs_hits) else "MEDIUM",
-                    "evidence": [{
-                        "type": "STATIC_ANALYSIS",
-                        "description": f"{c['file']}:{c['line']} references \"{h['path']}\" "
-                                        f"{'in what looks like an HTTP call' if c['looks_like_http_call'] else '(reference found, call pattern not confirmed)'}.",
-                    } for c in cs_hits],
-                })
+        # Middleware/dependency discovery (new capability): does this file
+        # export something used as a route-middleware argument elsewhere in
+        # the repository? Finds impact for files -- e.g. authentication
+        # middleware -- that define no routes of their own. Not gated on
+        # the diff touching a specific line within the file: a changed
+        # middleware file is treated as impacting every route discovered to
+        # use it, at whole-file granularity (see ARCHITECTURE_DISCOVERY_DESIGN.md
+        # for why finer-grained overlap detection isn't attempted here).
+        usages = discovery.find_middleware_usages(repo, path, file_text)
+        seen_routes = set()
+        for u in usages:
+            route = u["route"]
+            key = (u["file"], route["path"], route["method"])
+            if key in seen_routes:
+                continue
+            seen_routes.add(key)
+            any_relationship_found = True
+            using_component = discovery.component_for_path(u["file"], components)
+            primary_entity = {
+                "entity": f"{using_component or u['file']}: {route['method']} {route['path']} "
+                          f"(depends on {os.path.basename(path)} as middleware)",
+                "impact_type": "MIDDLEWARE_DEPENDENCY",
+                "confidence": "HIGH",
+                "evidence": [{
+                    "type": "SOURCE_CODE",
+                    "description": f"{path} exports {', '.join(u['used_names'])}, used as middleware by "
+                                    f"{route['method']} {route['path']} registered in {u['file']}:"
+                                    f"{route['start_line']}-{route['end_line']}.",
+                }],
+            }
+            _impact_for_route(repo, components, route, u["file"], using_component or service,
+                               primary_entity, affected_entities, uncertainty_sources)
 
-            # Test coverage evidence -- examine EVERY distinct same-service test
-            # file that references this route, not just the first one found, so
-            # a newly-added test (e.g. a real cross-service integration test
-            # added alongside an existing shadow-duplicate unit test) is not
-            # silently missed.
-            test_hits = find_test_evidence(repo, h["path"])
-            same_service_tests = [t for t in test_hits if service_name_from_path(t["file"]) == service]
-            distinct_test_files = sorted({t["file"] for t in same_service_tests})
-            if distinct_test_files:
-                for test_file in distinct_test_files:
-                    file_hits = [t for t in same_service_tests if t["file"] == test_file]
-                    imports_module = test_file_imports_module(repo, test_file, os.path.basename(path))
-                    is_real_cross_service = test_file_is_real_cross_service(repo, test_file)
-
-                    if is_real_cross_service:
-                        affected_entities.append({
-                            "entity": f"Real cross-service validation: {test_file}",
-                            "impact_type": "CROSS_SERVICE_VALIDATION",
-                            "confidence": "HIGH",
-                            "evidence": [{
-                                "type": "TEST_EXECUTION",
-                                "description": f"{t['file']}:{t['line']} references \"{h['path']}\".",
-                            } for t in file_hits] + [{
-                                "type": "STATIC_ANALYSIS",
-                                "description": (
-                                    f"{test_file} spawns a real, separate process running the changed "
-                                    f"module and drives it over real HTTP (via axios), rather than an "
-                                    f"in-process or mocked app -- this is direct evidence the changed "
-                                    f"behavior can be, and is, exercised as dependent services actually "
-                                    f"call it."
-                                ),
-                            }],
-                        })
-                    else:
-                        affected_entities.append({
-                            "entity": f"Existing test coverage: {test_file}",
-                            "impact_type": "TEST_COVERAGE",
-                            "confidence": "MEDIUM" if imports_module else "LOW",
-                            "evidence": [{
-                                "type": "TEST_EXECUTION",
-                                "description": f"{t['file']}:{t['line']} references \"{h['path']}\".",
-                            } for t in file_hits] + [{
-                                "type": "STATIC_ANALYSIS",
-                                "description": (
-                                    f"{test_file} DOES import/require the changed module directly."
-                                    if imports_module else
-                                    f"{test_file} does NOT import or require {os.path.basename(path)} -- "
-                                    f"it appears to re-implement its own test version of the route(s) instead. "
-                                    f"A passing result here does not confirm the actual changed code path was exercised."
-                                ),
-                            }],
-                        })
-            else:
-                uncertainty_sources.append(
-                    f"No test file evidence found for {h['method']} {h['path']} in service '{service}'."
-                )
-
-            # Explicit unknowns -- things this analysis structurally cannot know
+        if not any_relationship_found:
             uncertainty_sources.append(
-                f"Production call volume / exposure for {h['method']} {h['path']}: Unknown / insufficient evidence "
-                f"(no production telemetry access in this slice)."
-            )
-            uncertainty_sources.append(
-                f"Historical incident rate for this endpoint: Unknown / insufficient evidence "
-                f"(no incident-system access in this slice)."
+                f"No route or middleware relationship was discovered for {path} -- this may be a file "
+                f"outside this analyzer's discovery scope (see slice/ARCHITECTURE_DISCOVERY_DESIGN.md), "
+                f"not necessarily a file with no real impact."
             )
 
     return {
@@ -424,9 +531,20 @@ def bucket_from_score(score, thresholds=(1, 2, 4)):
 def build_risk_assessment(change, impact):
     transitive = [e for e in impact["affected_entities"] if e["impact_type"] == "TRANSITIVE"]
     caller_services = sorted({e["entity"].split(" (via")[0] for e in transitive})
-    structural_exposure_score = len(caller_services)
 
-    changed_paths = [e["entity"].split(": ", 1)[-1] for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
+    # Broadened for ADAPT_ARCHITECTURE_DISCOVERY: "structural exposure" is
+    # now the count of distinct additional things known to depend on the
+    # change -- cross-component callers (as before) PLUS routes reached via
+    # a newly-discovered middleware dependency (e.g. authentication
+    # middleware used by several endpoints in the same component). Same
+    # bucket_from_score() formula and thresholds as before; only the input
+    # is broadened, per the evidence now available.
+    middleware_entities = [e for e in impact["affected_entities"] if e["impact_type"] == "MIDDLEWARE_DEPENDENCY"]
+    middleware_route_count = len({e["entity"] for e in middleware_entities})
+    structural_exposure_score = len(caller_services) + middleware_route_count
+
+    changed_paths = [e["entity"].split(": ", 1)[-1] for e in impact["affected_entities"]
+                      if e["impact_type"] in ("DIRECT", "MIDDLEWARE_DEPENDENCY")]
     sensitive_name_hit = any(
         any(hint in p.lower() for hint in SENSITIVE_PATH_HINTS) for p in changed_paths
     )
@@ -504,6 +622,7 @@ def build_risk_assessment(change, impact):
         },
         "structural_exposure": {
             "caller_services": caller_services,
+            "middleware_route_count": middleware_route_count,
             "score": structural_exposure_score,
         },
         "sensitive_name_hit": sensitive_name_hit,
@@ -661,25 +780,33 @@ def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.y
 # 4. Validation Decision + real execution
 # ---------------------------------------------------------------------------
 
-def build_validation_decision(repo, change, risk):
-    services = sorted({service_name_from_path(p) for p in change["changed_files"] if service_name_from_path(p)})
+def build_validation_decision(repo, change, risk, components):
+    # Components affected by the change: the ones the changed files belong
+    # to, PLUS any component discovered as impacted via a middleware
+    # dependency or a cross-component caller -- otherwise a change whose
+    # only impact is "component X's route depends on this" would never get
+    # component X's test suite considered.
+    services = {discovery.component_for_path(p, components) for p in change["changed_files"]}
+    services |= set(risk["structural_exposure"]["caller_services"])
+    services = sorted(s for s in services if s)
     selected, rejected = [], []
 
     for svc in services:
-        svc_dir = os.path.join(repo, "services", svc)
-        pkg_path = os.path.join(svc_dir, "package.json")
+        svc_dir_rel = discovery.component_root_dir(svc, components)
+        svc_dir = os.path.join(repo, svc_dir_rel) if svc_dir_rel is not None else None
+        pkg_path = os.path.join(svc_dir, "package.json") if svc_dir else None
         has_test_script = False
-        if os.path.exists(pkg_path):
+        if pkg_path and os.path.exists(pkg_path):
             with open(pkg_path) as f:
                 pkg = json.load(f)
             has_test_script = "test" in pkg.get("scripts", {})
         if has_test_script:
             reason = (
-                f"'{svc}' service's existing test suite is the best available real validation for this change "
+                f"'{svc}' component's existing test suite is the best available real validation for this change "
                 f"(exists, runs via 'npm test')."
             )
             if risk["has_cross_service_validation"]:
-                reason += (" This service's test run ALSO includes a real cross-service integration test "
+                reason += (" This component's test run ALSO includes a real cross-service integration test "
                            "(spawns the actual service as a live process, driven over real HTTP) -- see "
                            "the E2E_TEST entry below.")
             elif not risk["direct_test_coverage"]:
@@ -689,6 +816,7 @@ def build_validation_decision(repo, change, risk):
             selected.append({
                 "type": "INTEGRATION_TEST",
                 "target": svc,
+                "target_dir": svc_dir_rel,
                 "command": "npm test",
                 "decision_reason": reason,
             })
@@ -696,7 +824,8 @@ def build_validation_decision(repo, change, risk):
             rejected.append({
                 "type": "INTEGRATION_TEST",
                 "target": svc,
-                "decision_reason": f"No 'test' script found in {svc}/package.json.",
+                "decision_reason": f"No 'test' script found for component '{svc}' "
+                                    f"({'no package.json test script' if svc_dir else 'component root could not be resolved'}).",
             })
 
     # The validation that would matter most: does a real cross-service test
@@ -750,7 +879,7 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False):
             # alongside that service's other tests and runs as part of the same
             # 'npm test' invocation). Its result is reflected there.
             continue
-        svc_dir = os.path.join(repo, "services", v["target"])
+        svc_dir = os.path.join(repo, v["target_dir"])
         if npm_install:
             # A fresh checkout (e.g. in CI) has no node_modules. This is an
             # execution-environment concern, not a decision-policy one --
@@ -830,6 +959,7 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     decision, decision_reason = recommendation
     direct = [e for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
     transitive = [e for e in impact["affected_entities"] if e["impact_type"] == "TRANSITIVE"]
+    middleware_dep = [e for e in impact["affected_entities"] if e["impact_type"] == "MIDDLEWARE_DEPENDENCY"]
     test_cov = [e for e in impact["affected_entities"] if e["impact_type"] == "TEST_COVERAGE"]
     cross_service_cov = [e for e in impact["affected_entities"] if e["impact_type"] == "CROSS_SERVICE_VALIDATION"]
 
@@ -839,19 +969,23 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
                   f"comparing working tree against `{change['base_ref']}` (HEAD `{change['repo_head'][:10]}`).*\n")
 
     lines.append("## CHANGE\n")
-    direct_desc = "; ".join(e["entity"] for e in direct) or "no route-level change detected"
-    lines.append(f"{direct_desc}.\n")
+    direct_desc = "; ".join(e["entity"] for e in direct) or None
+    if not direct_desc and middleware_dep:
+        direct_desc = "; ".join(e["entity"] for e in middleware_dep)
+    lines.append(f"{direct_desc or 'no route-level change detected'}.\n")
     lines.append(f"```\n{change['diff_stat']}\n```\n")
 
     lines.append("## POTENTIAL IMPACT\n")
     for e in direct:
         lines.append(f"- **{e['entity']}** (direct) -- confidence: {e['confidence']}")
+    for e in middleware_dep:
+        lines.append(f"- **{e['entity']}** (via middleware dependency) -- confidence: {e['confidence']}")
     for e in transitive:
         lines.append(f"- **{e['entity']}** (transitive) -- confidence: {e['confidence']}")
     lines.append("")
 
     lines.append("## EVIDENCE\n")
-    for e in direct + transitive + test_cov + cross_service_cov:
+    for e in direct + middleware_dep + transitive + test_cov + cross_service_cov:
         for ev in e["evidence"]:
             lines.append(f"- [{ev['type']}] {ev['description']}")
     lines.append("")
@@ -893,9 +1027,13 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
 
     lines.append("## WHY\n")
     why = []
-    if risk["structural_exposure"]["score"]:
-        why.append(f"The changed endpoint is called by {risk['structural_exposure']['score']} other service(s): "
-                    f"{', '.join(risk['structural_exposure']['caller_services'])}.")
+    if risk["structural_exposure"]["caller_services"]:
+        why.append(f"The changed endpoint is called by {len(risk['structural_exposure']['caller_services'])} "
+                    f"other component(s): {', '.join(risk['structural_exposure']['caller_services'])}.")
+    if risk["structural_exposure"]["middleware_route_count"]:
+        why.append(f"The change is used as middleware by {risk['structural_exposure']['middleware_route_count']} "
+                    f"distinct route(s) elsewhere in the codebase, discovered via export/import and "
+                    f"route-registration analysis (see POTENTIAL IMPACT).")
     if risk["sensitive_name_hit"]:
         why.append("The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.).")
     if risk["risk_indicators"]:
@@ -968,13 +1106,19 @@ def main():
         print("No changes found against", args.against, file=sys.stderr)
         sys.exit(1)
 
-    impact = build_impact_assessment(repo, change)
+    # Discovered once per run: every package.json-rooted component in the
+    # repository. See discovery.py / ARCHITECTURE_DISCOVERY_DESIGN.md --
+    # replaces the prior hardcoded services/<name>/ assumption.
+    components = discovery.find_components(repo)
+
+    impact = build_impact_assessment(repo, change, components)
     risk = build_risk_assessment(change, impact)
-    validation_decision = build_validation_decision(repo, change, risk)
+    validation_decision = build_validation_decision(repo, change, risk, components)
 
     ci_history = {}
     if args.github_repo and not args.no_ci_history:
-        services = sorted({service_name_from_path(p) for p in change["changed_files"] if service_name_from_path(p)})
+        services = sorted({discovery.component_for_path(p, components) for p in change["changed_files"]
+                            if discovery.component_for_path(p, components)})
         for svc in services:
             print(f"Fetching CI history for service '{svc}' from {args.github_repo}...", file=sys.stderr)
             ci_history[svc] = fetch_ci_history(args.github_repo, svc)
@@ -996,6 +1140,7 @@ def main():
         "repo": repo, "base_ref": args.against, "repo_head": change["repo_head"],
         "tool_version": TOOL_VERSION,
         "policy_version": POLICY_VERSION,
+        "discovered_components": components,
         "changed_files": change["changed_files"],
         "impact": impact, "risk": risk, "validation_decision": validation_decision,
         "ci_history": ci_history,

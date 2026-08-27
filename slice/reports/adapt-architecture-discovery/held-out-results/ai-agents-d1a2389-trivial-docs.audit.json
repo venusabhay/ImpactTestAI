@@ -1,0 +1,90 @@
+{
+  "repo": "/Users/abhay/git-venusabhay/ai-agents",
+  "base_ref": "d1a2389~1",
+  "repo_head": "d1a238949b80841e685def81326b80c9ba11dd05",
+  "tool_version": "0.3.0-pilot",
+  "policy_version": "repo-plus-ci-plus-cross-service-plus-discovery-v5",
+  "discovered_components": [
+    {
+      "name": "linkedin-cover-generator",
+      "root_dir": "agents/linkedin-cover-generator"
+    },
+    {
+      "name": "privacy-classifier",
+      "root_dir": "agents/privacy-classifier"
+    },
+    {
+      "name": "agent-api-test-generator",
+      "root_dir": "agents/api-test-generator"
+    },
+    {
+      "name": "agent-diagram-generator",
+      "root_dir": "agents/diagram-generator"
+    },
+    {
+      "name": "agent-github-pr-digest",
+      "root_dir": "agents/github-pr-digest"
+    },
+    {
+      "name": "job-matcher",
+      "root_dir": "agents/job-matcher"
+    },
+    {
+      "name": "shared",
+      "root_dir": "shared"
+    },
+    {
+      "name": "ai-agents",
+      "root_dir": ""
+    }
+  ],
+  "changed_files": [
+    "openspec/changes/add-microvm-ssh-access/.openspec.yaml",
+    "openspec/changes/add-microvm-ssh-access/tasks.md"
+  ],
+  "impact": {
+    "affected_entities": [],
+    "uncertainty_sources": []
+  },
+  "risk": {
+    "probability": "UNKNOWN",
+    "probability_reason": "Not estimated: no historical outcome data is available in this slice to calibrate a failure probability against. The risk indicators below are evidence that certain risk factors are present -- they are not a measurement of how likely a failure is.",
+    "risk_indicators": [],
+    "business_impact": "LOW",
+    "exposure": "LOW",
+    "risk_level": "LOW",
+    "confidence": {
+      "impact_confidence": "LOW",
+      "probability_confidence": "LOW",
+      "evidence_confidence": "LOW",
+      "overall": "LOW"
+    },
+    "structural_exposure": {
+      "caller_services": [],
+      "middleware_route_count": 0,
+      "score": 0
+    },
+    "sensitive_name_hit": false,
+    "risk_pattern_hits": [],
+    "direct_test_coverage": false,
+    "has_cross_service_validation": false,
+    "policy_version": "repo-plus-ci-plus-cross-service-plus-discovery-v5"
+  },
+  "validation_decision": {
+    "selected_validations": [],
+    "rejected_validations": [
+      {
+        "type": "INTEGRATION_TEST",
+        "target": "ai-agents",
+        "decision_reason": "No 'test' script found for component 'ai-agents' (no package.json test script)."
+      }
+    ]
+  },
+  "ci_history": {},
+  "outcomes": [],
+  "recommendation": {
+    "decision": "ESCALATE",
+    "reason": "Validation could not be completed (infrastructure/timeout or none available). Escalate for human review."
+  },
+  "generated_at": "2026-08-27T16:41:22.625847+00:00"
+}

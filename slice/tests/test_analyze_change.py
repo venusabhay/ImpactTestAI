@@ -60,36 +60,12 @@ def test_changed_line_ranges_ignores_other_files():
 # find_route_handlers -- brace-matched Express route parsing
 # ---------------------------------------------------------------------------
 
-def test_find_route_handlers_finds_post_route_and_end_line():
-    src = (
-        'app.post("/verify", async (req, res) => {\n'
-        "  doStuff();\n"
-        "  if (x) {\n"
-        "    doMore();\n"
-        "  }\n"
-        "});\n"
-        "\n"
-        'app.get("/health", (req, res) => {\n'
-        "  res.send('ok');\n"
-        "});\n"
-    )
-    handlers = ac.find_route_handlers(src)
-    by_path = {h["path"]: h for h in handlers}
-    assert set(by_path) == {"/verify", "/health"}
-    assert by_path["/verify"]["method"] == "POST"
-    assert by_path["/verify"]["start_line"] == 1
-    assert by_path["/verify"]["end_line"] == 6
-    assert by_path["/health"]["method"] == "GET"
-
-
-# ---------------------------------------------------------------------------
-# service_name_from_path
-# ---------------------------------------------------------------------------
-
-def test_service_name_from_path_matches_services_layout():
-    assert ac.service_name_from_path("services/auth-service/server.js") == "auth-service"
-    assert ac.service_name_from_path("frontend/src/App.jsx") is None
-    assert ac.service_name_from_path("services/") is None
+# Route detection and component/service identification moved to
+# discovery.py as part of ADAPT_ARCHITECTURE_DISCOVERY (generalized route
+# detection, package.json-based component discovery) -- see
+# tests/test_discovery.py for their coverage, and
+# tests/test_known_repos_regression.py for end-to-end coverage against the
+# real social-media-mini and user-management-app repository structures.
 
 
 # ---------------------------------------------------------------------------
@@ -204,3 +180,20 @@ def test_probability_is_always_unknown_never_a_bucket():
     assert risk["probability"] == "UNKNOWN"
     assert "risk_indicators" in risk
     assert risk["probability"] not in ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+
+# ---------------------------------------------------------------------------
+# Generic-path guard (ADAPT_ARCHITECTURE_DISCOVERY) -- a route path with no
+# meaningful segment (bare "/") is a substring of nearly everything; caller/
+# test-evidence search against it must be skipped rather than flood the
+# report with false positives. General guard, not tied to any repository.
+# ---------------------------------------------------------------------------
+
+def test_find_callers_skips_bare_root_path(tmp_path):
+    (tmp_path / "unrelated.js").write_text("const x = '/some/unrelated/path';\n")
+    assert ac.find_callers(str(tmp_path), "/", own_file="server.js", components=[]) == []
+
+
+def test_find_test_evidence_skips_bare_root_path(tmp_path):
+    (tmp_path / "whatever.test.js").write_text("const x = '/anything';\n")
+    assert ac.find_test_evidence(str(tmp_path), "/") == []
