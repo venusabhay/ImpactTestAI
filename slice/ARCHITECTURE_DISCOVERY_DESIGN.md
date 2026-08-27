@@ -60,6 +60,8 @@ Where a match is found, the routes using that middleware become impact-analysis 
 
 Minor generalization of the existing "does this look like an HTTP call" check: expand beyond `axios|fetch\(` to also recognize `\.ajax\(` and `XMLHttpRequest` as call-shaped evidence. The underlying mechanism (literal-string search for the route path across the whole repository, already repo-wide and not scoped to a single "service") is unchanged and was already general — its failure in Stage 2C was a downstream consequence of (1) and (2) above, not a defect of its own, confirmed by re-tracing the Stage 2C code path.
 
+**Known limitation, found and fixed during implementation, disclosed here:** literal substring search breaks down for a route path with no meaningful segment (the bare root route `/`) — it matches almost any file (URLs in HTML, filesystem paths in a Dockerfile, etc.), flooding the report with false-positive "caller"/"test evidence" hits. This is a general property of substring search against a near-universal substring, not specific to any repository, so the fix is a general guard (`find_callers`/`find_test_evidence` skip search entirely when the path has no non-slash content) rather than anything scoped to a filename or repository.
+
 ## What does NOT change
 
 - `RiskAssessment`'s fields, thresholds, and the "probability stays `UNKNOWN`" invariant.
