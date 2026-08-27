@@ -45,3 +45,29 @@ Per the business record of this pilot: architecture discovery is now understood 
 **Do not optimize the discovery mechanism to make `social-media-mini` and `user-management-app` pass.** Both repositories are now known to whoever builds the next version — it is possible to build discovery rules that happen to work on exactly these two codebases (correctly handling `services/<name>/`, `app.METHOD()`, `express.Router()`, and this specific frontend/backend pair) without having built anything that actually generalizes. That would be overfitting to the training set, not architecture discovery.
 
 Before treating `ADAPT_ARCHITECTURE_DISCOVERY` as done, the improved discovery mechanism must additionally be run against **at least one further repository that was not used, referenced, or consulted while building or tuning the discovery rules** — chosen after the discovery logic is written, not before. Passing the Change A/B/C acceptance criterion above on the two known repositories is a necessary regression check, not proof of generalization. Only a clean result on a genuinely held-out repository answers the actual product question: *"Can we make the analysis understand different repository architectures, or did we just learn two of them by heart?"*
+
+## Required process for `ADAPT_ARCHITECTURE_DISCOVERY`
+
+Business-approved sequence — do not reorder, and in particular do not let step 4 (selecting held-out repositories) happen before step 3 (freezing the implementation), or the held-out test above is void by construction:
+
+```text
+1. Define the architecture-discovery approach.
+2. Implement it against the known acceptance fixtures (Change A/B/C above).
+3. Freeze the implementation.
+4. Select genuinely new repositories -- chosen only after step 3.
+5. Run the tool against them without repository-specific special cases.
+6. Measure whether it correctly identifies impact and selects useful validation.
+7. Record both successes and failures.
+```
+
+Step 7 is not optional and is not just for successes: a held-out repository where discovery fails is exactly as valuable a result as one where it succeeds, and must be written up with the same rigor as the Stage 2C report — not quietly dropped or excluded because it made the numbers worse.
+
+## Current product position (for reference when this phase starts)
+
+**Proven:** repository change detection; impact analysis; risk indicators without fabricated probability; validation recommendation; CI-history evidence; cross-service validation; real regression detection; reproducible experiment fixtures.
+
+**Known boundary:** architecture discovery does not currently generalize beyond the `services/<name>/` style it was built against.
+
+**Approved next milestone:** `ADAPT_ARCHITECTURE_DISCOVERY` (not yet started).
+
+**Not yet approved:** production telemetry, Stage 3, broad productization, further policy/risk-score tuning. None of these should be pulled forward as a side effect of architecture-discovery work.
