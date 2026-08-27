@@ -44,6 +44,57 @@ def strip_source_extension(filename):
             return filename[: -len(ext)]
     return filename
 
+
+def strip_comments(text):
+    """Blanks out // line comments and /* */ block comments in JS/TS source
+    text, without being fooled by // or /* appearing inside a string or
+    template literal. Found necessary via held-out testing: a code-shaped
+    example inside a comment was matched by the route scanner as a real
+    route registration.
+
+    A lightweight character-scanning state machine, not a real parser --
+    consistent with this module's disclosed regex/text-based scope (see
+    module docstring). Preserves line count and character offsets exactly
+    (comment content is replaced with spaces, embedded newlines kept) so
+    line-number reporting elsewhere in the analyzer is unaffected.
+    """
+    result = []
+    i, n = 0, len(text)
+    in_string = None  # None, or the quote/backtick character we're inside
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_string:
+            result.append(ch)
+            if ch == "\\" and i + 1 < n:
+                result.append(nxt)
+                i += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_string = ch
+            result.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            end = text.find("\n", i)
+            end = end if end != -1 else n
+            result.append(" " * (end - i))
+            i = end
+            continue
+        if ch == "/" and nxt == "*":
+            close = text.find("*/", i + 2)
+            end = close + 2 if close != -1 else n
+            result.append("".join("\n" if c == "\n" else " " for c in text[i:end]))
+            i = end
+            continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
+
 ROUTE_CALL_RE = re.compile(r"\b(\w+)\.(get|post|put|delete|patch|all)\(\s*[\"'`](/[^\"'`]*)[\"'`]")
 
 HANDLER_START_RE = re.compile(r"(async\s*\(|\([^)]*\)\s*=>|function\s*\(|=>\s*\{)")
@@ -122,7 +173,16 @@ def _extract_middleware_args(call_text, path):
     segment = after[:cut.start()] if cut else after
     args = []
     for token in segment.split(","):
-        token = token.strip().strip("()")
+        # Strips wrapping parens AND trailing statement punctuation (`;`)/
+        # whitespace. Needed for the case with no inline-function handler at
+        # all (e.g. `router.get(path, controller.method);`) -- there,
+        # `segment` runs all the way to the end of the source line,
+        # trailing semicolon included, since no HANDLER_START_RE match
+        # exists to cut it off earlier. Without stripping `;` here, a bare
+        # or dotted final-handler reference would never match the
+        # identifier pattern below, and controller-method dependency
+        # tracing could never fire for this (common) calling style.
+        token = token.strip().strip("();").strip()
         if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$.]*", token) and token not in ("async",):
             args.append(token)
     return args
@@ -132,7 +192,12 @@ def find_route_registrations(file_text):
     """Generalized route detection: ANY receiver.method(path, ...) call, not
     only app.method(...). The receiver's name is captured but never
     constrained -- it is a per-file styling choice (app/router/server/...),
-    not architectural evidence."""
+    not architectural evidence.
+
+    Comment-aware: file_text is passed through strip_comments() first, so a
+    code-shaped example inside a // or /* */ comment is not mistaken for a
+    real route registration (found via held-out testing)."""
+    file_text = strip_comments(file_text)
     lines = file_text.splitlines()
     registrations = []
     for i, line in enumerate(lines):
@@ -175,7 +240,9 @@ def find_route_registrations(file_text):
 
 def find_exported_names(file_text):
     """Best-effort export-name extraction across common JS export forms.
-    Regex-based, not a real parser."""
+    Regex-based, not a real parser. Comment-aware for the same reason as
+    find_route_registrations() -- see its docstring."""
+    file_text = strip_comments(file_text)
     names = set()
     for m in re.finditer(r"export\s+const\s+([A-Za-z_$][A-Za-z0-9_$]*)", file_text):
         names.add(m.group(1))
@@ -193,11 +260,39 @@ def find_exported_names(file_text):
     return names
 
 
+def _resolve_arg_to_export(arg, exported_names):
+    """Does this middleware-argument token depend on one of the changed
+    file's exports? Two forms of evidence, both general:
+
+      - exact match: `protect` used bare, where `protect` is exported
+        directly (export const protect = ...).
+      - property access: `controller.getUsers` used as a route handler,
+        where `controller` is exported (export const controller = ...) and
+        `getUsers` is a member of the value it holds. Class methods are
+        never themselves module exports in JS/TS -- only the class/instance
+        binding is -- so resolving the ROOT identifier of a dotted
+        reference against the exported names is the general, correct
+        mechanism, not a special case for any particular class shape.
+        Found necessary via held-out testing against a real repository
+        using exactly this pattern.
+
+    Returns the matched exported name, or None.
+    """
+    if arg in exported_names:
+        return arg
+    root = arg.split(".", 1)[0]
+    if root in exported_names:
+        return root
+    return None
+
+
 def find_middleware_usages(repo, changed_path, changed_text):
     """Does the changed file export something used as a route-middleware
-    argument elsewhere in the repository? If so, those routes are impacted
-    by this change even though the changed file defines no routes of its
-    own. Generic mechanism -- not keyed to any specific filename."""
+    argument (or, via property access, a route HANDLER -- see
+    _resolve_arg_to_export) elsewhere in the repository? If so, those
+    routes are impacted by this change even though the changed file
+    defines no routes of its own. Generic mechanism -- not keyed to any
+    specific filename or class shape."""
     exported = find_exported_names(changed_text)
     if not exported:
         return []
@@ -214,7 +309,7 @@ def find_middleware_usages(repo, changed_path, changed_text):
                 continue
             try:
                 with open(full, "r", errors="ignore") as f:
-                    text = f.read()
+                    text = strip_comments(f.read())
             except OSError:
                 continue
             # Optional extension suffix generalized to any known source
@@ -224,7 +319,11 @@ def find_middleware_usages(repo, changed_path, changed_text):
             if not re.search(rf"""(from|require)\s*\(?['"][^'"]*{re.escape(changed_stub)}({ext_group})?['"]""", text):
                 continue
             for reg in find_route_registrations(text):
-                used = exported & set(reg["middleware_args"])
-                if used:
-                    usages.append({"route": reg, "file": rel, "used_names": sorted(used)})
+                matched = {}
+                for arg in reg["middleware_args"]:
+                    name = _resolve_arg_to_export(arg, exported)
+                    if name:
+                        matched[name] = True
+                if matched:
+                    usages.append({"route": reg, "file": rel, "used_names": sorted(matched)})
     return usages

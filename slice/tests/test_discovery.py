@@ -252,3 +252,115 @@ def test_middleware_usage_discovered_across_typescript_files(tmp_path):
     usages = discovery.find_middleware_usages(str(tmp_path), middleware_path, changed_text)
     assert len(usages) == 1
     assert usages[0]["file"] == "routes/userRoutes.tsx"
+
+
+# ---------------------------------------------------------------------------
+# Comment-aware scanning -- found necessary via held-out testing: a
+# code-shaped example inside a comment was matched as a real route
+# registration. General fix (strip_comments), not tied to any repository.
+# ---------------------------------------------------------------------------
+
+def test_strip_comments_blanks_line_comment():
+    src = '// app.get("/fake", handler);\nconst x = 1;\n'
+    stripped = discovery.strip_comments(src)
+    assert "app.get" not in stripped
+    assert "const x = 1;" in stripped
+
+
+def test_strip_comments_blanks_block_comment_preserving_line_count():
+    src = '/* app.get("/fake", handler);\nmore comment */\nconst x = 1;\n'
+    stripped = discovery.strip_comments(src)
+    assert "app.get" not in stripped
+    assert stripped.count("\n") == src.count("\n")  # line numbers unaffected
+
+
+def test_strip_comments_does_not_touch_urls_inside_strings():
+    src = 'const url = "http://example.com";\n'
+    stripped = discovery.strip_comments(src)
+    assert "http://example.com" in stripped
+
+
+def test_route_inside_comment_is_not_detected():
+    src = '// Example: app.get("/fake-example", handler);\nconst real = 1;\n'
+    regs = discovery.find_route_registrations(src)
+    assert regs == []
+
+
+def test_route_inside_block_comment_is_not_detected():
+    src = '/**\n * router.post("/also-fake", handler)\n */\nconst real = 1;\n'
+    regs = discovery.find_route_registrations(src)
+    assert regs == []
+
+
+def test_real_route_after_comment_is_still_detected():
+    src = '// a normal comment, no code here\napp.get("/real", handler);\n'
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/real"
+    assert regs[0]["start_line"] == 2  # line number correctly unaffected by the comment above
+
+
+def test_export_inside_comment_is_not_detected():
+    src = '// export const fakeExport = 1;\nconst real = 2;\n'
+    assert discovery.find_exported_names(src) == set()
+
+
+# ---------------------------------------------------------------------------
+# Controller-method dependency tracing -- found necessary via held-out
+# testing against a real repository using class-based controllers, where
+# route handlers are referenced as `controller.methodName` (property
+# access), not a bare imported identifier. General fix: resolve the ROOT
+# identifier of a dotted reference against the changed file's exports --
+# class methods are never themselves module exports in JS/TS, only the
+# class/instance binding is, so this is the correct general mechanism, not
+# a special case for any specific class or file.
+# ---------------------------------------------------------------------------
+
+def test_controller_method_reference_resolves_to_its_export(tmp_path):
+    controller_path = "controllers/userController.ts"
+    _write(
+        tmp_path / controller_path,
+        "class UserController {\n"
+        "  public getUsers = async (req, res) => { res.send([]); };\n"
+        "}\n"
+        "export const userController = new UserController();\n",
+    )
+    _write(
+        tmp_path / "routes/userRouter.ts",
+        'import { userController } from "../controllers/userController";\n'
+        'userRouter.get("/", userController.getUsers);\n',
+    )
+    with open(tmp_path / controller_path) as f:
+        changed_text = f.read()
+
+    usages = discovery.find_middleware_usages(str(tmp_path), controller_path, changed_text)
+    assert len(usages) == 1
+    assert usages[0]["route"]["path"] == "/"
+    assert usages[0]["used_names"] == ["userController"]
+
+
+def test_controller_method_reference_with_second_route(tmp_path):
+    """Mirrors the real repository pattern found in held-out testing: two
+    routes, one with an extra validation call before the handler
+    reference."""
+    controller_path = "controllers/userController.ts"
+    _write(tmp_path / controller_path, "export const userController = new UserController();\n")
+    _write(
+        tmp_path / "routes/userRouter.ts",
+        'import { userController } from "../controllers/userController";\n'
+        'userRouter.get("/", userController.getUsers);\n'
+        'userRouter.get("/:id", validateRequest(GetUserSchema), userController.getUser);\n',
+    )
+    with open(tmp_path / controller_path) as f:
+        changed_text = f.read()
+
+    usages = discovery.find_middleware_usages(str(tmp_path), controller_path, changed_text)
+    routes_found = {u["route"]["path"] for u in usages}
+    assert {"/", "/:id"} <= routes_found
+
+
+def test_bare_identifier_still_resolves_exactly_not_just_by_prefix():
+    assert discovery._resolve_arg_to_export("protect", {"protect"}) == "protect"
+    assert discovery._resolve_arg_to_export("userController.getUsers", {"userController"}) == "userController"
+    assert discovery._resolve_arg_to_export("unrelatedThing", {"protect"}) is None
+    assert discovery._resolve_arg_to_export("somethingElse.method", {"protect"}) is None

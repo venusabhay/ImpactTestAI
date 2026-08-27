@@ -64,7 +64,7 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.4.0-pilot"
+TOOL_VERSION = "0.5.0-pilot"
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -117,7 +117,22 @@ TOOL_VERSION = "0.4.0-pilot"
 #       TypeScript repository, not a deliberate scope decision. Same
 #       route/export/import regexes, applied to a broader file set; no
 #       change to any formula, threshold, or decision rule.
-POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v6"
+#   v7 (ADAPT_ARCHITECTURE_DISCOVERY, narrow follow-up milestone): fixes two
+#       specific gaps found in the v6 held-out round, both general, neither
+#       repository-specific: (1) route/export scanning is now comment-aware
+#       (discovery.strip_comments()) -- a code-shaped example inside a
+#       comment was previously matched as a real route registration; (2)
+#       controller-method dependency tracing -- a route handler referenced
+#       as `controller.methodName` (property access, common in class-based
+#       controllers) now resolves against the controller's export the same
+#       way a bare identifier does, via discovery._resolve_arg_to_export().
+#       Also fixed the underlying _extract_middleware_args() bug that made
+#       (2) impossible: trailing `;` after a bare/dotted final-handler
+#       reference (no inline function, so no HANDLER_START_RE cut point)
+#       was never stripped, so the token never matched the identifier
+#       pattern at all. No change to any formula, threshold, or decision
+#       rule; no change to RiskAssessment/probability/risk_level semantics.
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v7"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
