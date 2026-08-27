@@ -238,10 +238,140 @@ def find_route_registrations(file_text):
 # 3. Middleware / dependency discovery (new capability)
 # ---------------------------------------------------------------------------
 
+def _extract_balanced(text, open_idx, open_ch="{", close_ch="}"):
+    """Returns the text strictly between the balanced open_ch/close_ch pair
+    starting at open_idx (which must point at open_ch), respecting string/
+    template-literal boundaries (a brace inside a string does not count).
+    Returns None if the delimiter is never closed (malformed/truncated
+    input) -- callers must treat that as 'no evidence', not a crash.
+
+    General-purpose, delimiter-agnostic balance scanner -- not specific to
+    object literals; used by the CommonJS object-literal export scan below,
+    but not named or scoped to that one caller."""
+    depth = 0
+    i, n = open_idx, len(text)
+    in_string = None
+    content_start = open_idx + 1
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_string = ch
+            i += 1
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[content_start:i]
+        i += 1
+    return None
+
+
+def _split_top_level(text, sep=","):
+    """Splits text on sep, but only at nesting depth 0 -- occurrences of sep
+    inside (), [], {}, or a string/template literal do not split. Needed
+    because an object-literal export's entries can themselves contain
+    commas (nested objects, function values, default parameters)."""
+    parts = []
+    current = []
+    depth = 0
+    in_string = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            current.append(ch)
+            if ch == "\\" and i + 1 < n:
+                current.append(text[i + 1])
+                i += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_string = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch in ")]}":
+            depth -= 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch == sep and depth == 0:
+            parts.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
+def _object_literal_export_names(obj_body):
+    """Given the text strictly inside a `{ ... }` object literal, returns
+    the set of statically-determinable property names it defines -- the
+    general mechanism behind CommonJS's `module.exports = { a, b, c }`
+    shorthand-export convention (found necessary via v7 held-out testing:
+    a real repository's controller exported this way, and its handlers
+    were never connected back to the routes that reference them).
+
+    For each top-level, comma-separated entry:
+      - `name` (shorthand property) -> exported as `name`.
+      - `name: value` -> exported as `name` (the property KEY is what a
+        consumer references, e.g. `controller.name`, regardless of what
+        local identifier `value` happens to be).
+      - `'name': value` / `"name": value` -> same, quotes stripped.
+      - `...spread` -> skipped: a spread's contributed names are not
+        statically knowable from this file alone.
+      - `[computed]: value` -> skipped: not a static name.
+      - anything else that isn't a bare identifier/quoted-string key ->
+        skipped, rather than guessed.
+    """
+    names = set()
+    for entry in _split_top_level(obj_body):
+        entry = entry.strip()
+        if not entry or entry.startswith("...") or entry.startswith("["):
+            continue
+        depth = 0
+        colon_at = None
+        for i, ch in enumerate(entry):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            elif ch == ":" and depth == 0:
+                colon_at = i
+                break
+        key = entry[:colon_at] if colon_at is not None else entry
+        key = key.strip()
+        if len(key) >= 2 and key[0] == key[-1] and key[0] in ("'", '"'):
+            key = key[1:-1]
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key):
+            names.add(key)
+    return names
+
+
 def find_exported_names(file_text):
-    """Best-effort export-name extraction across common JS export forms.
-    Regex-based, not a real parser. Comment-aware for the same reason as
-    find_route_registrations() -- see its docstring."""
+    """Best-effort export-name extraction across common JS/CommonJS export
+    forms. Regex-based, not a real parser. Comment-aware for the same
+    reason as find_route_registrations() -- see its docstring."""
     file_text = strip_comments(file_text)
     names = set()
     for m in re.finditer(r"export\s+const\s+([A-Za-z_$][A-Za-z0-9_$]*)", file_text):
@@ -257,33 +387,92 @@ def find_exported_names(file_text):
                 names.add(part)
     for m in re.finditer(r"(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=", file_text):
         names.add(m.group(1))
+    # CommonJS object-literal export shorthand: `module.exports = { a, b }`
+    # (and the equivalent bare `exports = { a, b }`, though a plain
+    # reassignment of `exports` itself has no effect at runtime unless it's
+    # actually `module.exports` -- included anyway since it's the same
+    # syntactic shape and costs nothing extra to recognize as evidence).
+    for m in re.finditer(r"(?:module\.)?exports\s*=\s*\{", file_text):
+        open_idx = m.end() - 1
+        obj_body = _extract_balanced(file_text, open_idx)
+        if obj_body is not None:
+            names.update(_object_literal_export_names(obj_body))
     return names
 
 
-def _resolve_arg_to_export(arg, exported_names):
+def _resolve_arg_to_export(arg, exported_names, whole_module_aliases=frozenset()):
     """Does this middleware-argument token depend on one of the changed
-    file's exports? Two forms of evidence, both general:
+    file's exports? Three forms of evidence, all general:
 
       - exact match: `protect` used bare, where `protect` is exported
         directly (export const protect = ...).
-      - property access: `controller.getUsers` used as a route handler,
-        where `controller` is exported (export const controller = ...) and
-        `getUsers` is a member of the value it holds. Class methods are
-        never themselves module exports in JS/TS -- only the class/instance
-        binding is -- so resolving the ROOT identifier of a dotted
-        reference against the exported names is the general, correct
-        mechanism, not a special case for any particular class shape.
-        Found necessary via held-out testing against a real repository
-        using exactly this pattern.
+      - root-identifier match: `controller.getUsers` used as a route
+        handler, where `controller` is itself exported (export const
+        controller = ...) and `getUsers` is a member of the value it
+        holds. Class methods are never themselves module exports in
+        JS/TS -- only the class/instance binding is -- so resolving the
+        ROOT identifier of a dotted reference against the exported names
+        is the general, correct mechanism, not a special case for any
+        particular class shape. Found via held-out testing against a
+        real repository using exactly this pattern.
+      - property match: `authController.logout` used as a route handler,
+        where `authController` is an arbitrary LOCAL alias for a
+        whole-module import/require of the changed file (see
+        _whole_module_import_aliases) and `logout` is itself one of the
+        changed file's exported property names (the common CommonJS
+        `module.exports = { logout, ... }` object-literal, or
+        `exports.logout = ...`, convention). This is the reverse
+        situation from the root-identifier case above: here the LOCAL
+        name is arbitrary and the PROPERTY is the export. Found via
+        held-out testing against a real repository using exactly this
+        pattern. Gated on whole_module_aliases (rather than matching any
+        `X.propertyName` in the codebase) so an unrelated file's
+        similarly-named property is never mistaken for a dependency.
 
     Returns the matched exported name, or None.
     """
     if arg in exported_names:
         return arg
-    root = arg.split(".", 1)[0]
+    if "." not in arg:
+        return None
+    root, prop = arg.split(".", 1)
     if root in exported_names:
         return root
+    if root in whole_module_aliases and prop in exported_names:
+        return prop
     return None
+
+
+def _whole_module_import_aliases(file_text, changed_stub):
+    """Local variable names in `file_text` bound to a WHOLE-MODULE
+    import/require of the file identified by `changed_stub` (its basename
+    without extension) -- as opposed to a named import of one specific
+    export. Needed to safely resolve `X.propertyName` where `propertyName`
+    is a CommonJS object-literal/property-assignment export of the changed
+    file and `X` is an arbitrary local alias for the whole exports object
+    (e.g. `const authController = require('../controllers/auth.controller')`),
+    without matching some unrelated `X.propertyName` elsewhere that merely
+    happens to share a property name.
+
+    Recognizes `const/let/var NAME = require(<path>)`, `import NAME from
+    <path>` (default import), and `import * as NAME from <path>`
+    (namespace import). Deliberately excludes `import { a, b } from <path>`
+    (named imports) -- those bind specific export names directly and are
+    handled by the root-identifier match above instead, not this
+    whole-module mechanism."""
+    ext_group = "|".join(re.escape(e) for e in SOURCE_EXTENSIONS)
+    path_pat = rf"""['"][^'"]*{re.escape(changed_stub)}({ext_group})?['"]"""
+    aliases = set()
+    for m in re.finditer(
+        rf"(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\(\s*{path_pat}\s*\)",
+        file_text,
+    ):
+        aliases.add(m.group(1))
+    for m in re.finditer(rf"import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*{path_pat}", file_text):
+        aliases.add(m.group(1))
+    for m in re.finditer(rf"import\s*\*\s*as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*from\s*{path_pat}", file_text):
+        aliases.add(m.group(1))
+    return aliases
 
 
 def find_middleware_usages(repo, changed_path, changed_text):
@@ -318,10 +507,11 @@ def find_middleware_usages(repo, changed_path, changed_text):
             ext_group = "|".join(re.escape(e) for e in SOURCE_EXTENSIONS)
             if not re.search(rf"""(from|require)\s*\(?['"][^'"]*{re.escape(changed_stub)}({ext_group})?['"]""", text):
                 continue
+            whole_module_aliases = _whole_module_import_aliases(text, changed_stub)
             for reg in find_route_registrations(text):
                 matched = {}
                 for arg in reg["middleware_args"]:
-                    name = _resolve_arg_to_export(arg, exported)
+                    name = _resolve_arg_to_export(arg, exported, whole_module_aliases)
                     if name:
                         matched[name] = True
                 if matched:

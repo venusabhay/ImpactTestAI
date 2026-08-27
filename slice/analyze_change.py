@@ -64,7 +64,7 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.5.0-pilot"
+TOOL_VERSION = "0.6.0-pilot"
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -132,7 +132,32 @@ TOOL_VERSION = "0.5.0-pilot"
 #       was never stripped, so the token never matched the identifier
 #       pattern at all. No change to any formula, threshold, or decision
 #       rule; no change to RiskAssessment/probability/risk_level semantics.
-POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v7"
+#   v8 (ADAPT_ARCHITECTURE_DISCOVERY, narrow follow-up milestone): fixes the
+#       one gap found in the v7 held-out round: find_exported_names() did
+#       not recognize the CommonJS object-literal export shorthand
+#       (`module.exports = { getUsers, createUser }` and the equivalent
+#       explicit-key form `module.exports = { getUsers: impl }`), only ESM
+#       `export const/function/{}` and CommonJS `exports.X = ...` property
+#       assignment. Added via a general balanced-brace scan
+#       (discovery._extract_balanced()) plus a top-level-comma-aware object-
+#       literal entry parser (discovery._object_literal_export_names()) --
+#       not a special case for any file, since it recognizes the syntactic
+#       shape, not any particular property name. This also required a
+#       companion resolution fix: previously, `_resolve_arg_to_export()`
+#       only matched a dotted reference's ROOT identifier against the
+#       exported names (correct for a named/aliased import of one specific
+#       export, e.g. a class-instance singleton). The object-literal export
+#       case is the mirror image -- the LOCAL variable is an arbitrary
+#       alias for a whole-module `require(...)`, and the PROPERTY name is
+#       the actual export -- so a new, gated property-match mode was added,
+#       restricted to cases where the root is a whole-module import/require
+#       alias of the changed file specifically
+#       (discovery._whole_module_import_aliases()), not any `X.propertyName`
+#       in the codebase, to avoid false positives from unrelated files that
+#       happen to share a property name. No change to any formula,
+#       threshold, or decision rule; no change to RiskAssessment/
+#       probability/risk_level semantics.
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v8"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic

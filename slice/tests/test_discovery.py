@@ -364,3 +364,88 @@ def test_bare_identifier_still_resolves_exactly_not_just_by_prefix():
     assert discovery._resolve_arg_to_export("userController.getUsers", {"userController"}) == "userController"
     assert discovery._resolve_arg_to_export("unrelatedThing", {"protect"}) is None
     assert discovery._resolve_arg_to_export("somethingElse.method", {"protect"}) is None
+
+
+# ---------------------------------------------------------------------------
+# CommonJS object-literal export shorthand (`module.exports = { a, b, c }`)
+# -- found necessary via v7 held-out testing: a real repository's controller
+# exports its handlers this way, and they were never connected back to the
+# routes that reference them (`find_exported_names` only recognized ESM
+# `export const/function/{}` forms and CommonJS `exports.X = ...` property
+# assignment, not this equally-common CommonJS object-literal form).
+# ---------------------------------------------------------------------------
+
+def test_object_literal_export_shorthand_properties():
+    src = (
+        "const getUsers = async (req, res) => {};\n"
+        "const createUser = async (req, res) => {};\n"
+        "module.exports = {\n  getUsers,\n  createUser,\n};\n"
+    )
+    assert discovery.find_exported_names(src) == {"getUsers", "createUser"}
+
+
+def test_object_literal_export_explicit_key_value():
+    src = "function impl() {}\nmodule.exports = {\n  getUsers: impl,\n};\n"
+    names = discovery.find_exported_names(src)
+    assert "getUsers" in names
+    assert "impl" not in names  # the KEY is the exported name, not the local value
+
+
+def test_object_literal_export_ignores_spread_and_computed_keys():
+    src = "const dyn = 'x';\nmodule.exports = {\n  ...base,\n  [dyn]: 1,\n  real,\n};\n"
+    assert discovery.find_exported_names(src) == {"real"}
+
+
+def test_object_literal_export_with_nested_braces_in_value():
+    src = "module.exports = {\n  config: { retries: 3 },\n  getUsers,\n};\n"
+    names = discovery.find_exported_names(src)
+    assert "config" in names
+    assert "getUsers" in names
+    assert "retries" not in names  # nested object's keys are not top-level exports
+
+
+def test_object_literal_export_quoted_key():
+    src = 'module.exports = {\n  "getUsers": impl,\n};\n'
+    assert discovery.find_exported_names(src) == {"getUsers"}
+
+
+def test_object_literal_export_inside_comment_is_not_detected():
+    src = "// module.exports = { fake };\nconst real = 1;\n"
+    assert discovery.find_exported_names(src) == set()
+
+
+def test_controller_object_literal_export_connects_to_route(tmp_path):
+    """Mirrors the real repository pattern found in v7 held-out testing:
+    a plain-CommonJS controller exporting its handlers via object-literal
+    shorthand, referenced elsewhere as `authController.logout`."""
+    controller_path = "controllers/auth.controller.js"
+    _write(
+        tmp_path / controller_path,
+        "const logout = async (req, res) => { res.status(204).send(); };\n"
+        "const login = async (req, res) => {};\n"
+        "module.exports = {\n  login,\n  logout,\n};\n",
+    )
+    _write(
+        tmp_path / "routes/auth.route.js",
+        "const authController = require('../controllers/auth.controller');\n"
+        "router.post('/logout', authController.logout);\n",
+    )
+    with open(tmp_path / controller_path) as f:
+        changed_text = f.read()
+
+    usages = discovery.find_middleware_usages(str(tmp_path), controller_path, changed_text)
+    assert len(usages) == 1
+    assert usages[0]["route"]["path"] == "/logout"
+    assert usages[0]["used_names"] == ["logout"]
+
+
+def test_split_top_level_respects_nested_brackets_and_strings():
+    parts = discovery._split_top_level("a, {b: 1, c: 2}, 'x, y', [1, 2]")
+    assert [p.strip() for p in parts] == ["a", "{b: 1, c: 2}", "'x, y'", "[1, 2]"]
+
+
+def test_extract_balanced_handles_braces_inside_strings():
+    text = 'module.exports = { msg: "a { b", real };'
+    open_idx = text.index("{")
+    body = discovery._extract_balanced(text, open_idx)
+    assert body == ' msg: "a { b", real '
