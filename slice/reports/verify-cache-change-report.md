@@ -1,6 +1,6 @@
 # Change Risk & Validation Report
 
-*Generated 2026-08-27T08:32:34.125775+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
+*Generated 2026-08-27T08:47:05.891463+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
 
 ## CHANGE
 
@@ -41,9 +41,21 @@ Risk indicators observed (factors present -- not a probability):
 - introduces new in-memory state
 - introduces or touches caching (statefulness / staleness risk)
 
+## HISTORICAL EVIDENCE (CI)
+
+**auth-service**
+
+- Source: GitHub Actions REST API (public, unauthenticated) (`venusabhay/social-media-mini`, workflow `.github/workflows/ci.yml`)
+- Runs examined: 7 (window: 2025-11-19T18:07:40Z to 2025-11-19T18:27:59Z)
+- Relevant job history for `auth-service`: 7 run(s) matched -- 0 failed, 2 cancelled (due to an unrelated sibling job, not this service), 5 passed
+- **Historical signal:** No confirmed CI job failures specific to this service were found across 7 relevant run(s) examined (2 job(s) were CANCELLED because a different, unrelated job in the same run failed -- that is not evidence against this service, and is not counted as a failure).
+- What this does NOT establish:
+  - A CI job failure, where one exists, does not confirm a production regression -- it may reflect a flaky test, a dependency/environment issue, or an unrelated CI configuration problem. This history does not distinguish those causes; a confirmed failure is evidence of past instability, not a measured probability of future failure.
+  - Only 7 workflow run(s) on `.github/workflows/ci.yml` were examined, spanning 2025-11-19T18:07:40Z to 2025-11-19T18:27:59Z -- too small and too recent a sample to support any calibrated statistic.
+
 ## WHY
 
-The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff contains factors associated with elevated risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). These are indicators the risk level accounts for, not a measured probability of failure. The relevant existing test file does not import the changed module -- it duplicates the route logic instead, so passing tests are a weak, indirect signal at best. Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
+The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff contains factors associated with elevated risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). These are indicators the risk level accounts for, not a measured probability of failure. CI history for auth-service: No confirmed CI job failures specific to this service were found across 7 relevant run(s) examined (2 job(s) were CANCELLED because a different, unrelated job in the same run failed -- that is not evidence against this service, and is not counted as a failure). The relevant existing test file does not import the changed module -- it duplicates the route logic instead, so passing tests are a weak, indirect signal at best. Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
 
 ## RECOMMENDED VALIDATION
 
@@ -62,29 +74,29 @@ The changed endpoint is called by 2 other service(s): post-service, user-service
 > auth-service@1.0.0 test
 > node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit
 
-(node:31109) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(node:31738) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-PASS ./auth.test.js (14.513 s)
+PASS ./auth.test.js (13.407 s)
   Auth Service - POST /register
-    ✓ should register a new user successfully (693 ms)
+    ✓ should register a new user successfully (621 ms)
     ✓ should not register user with existing email (217 ms)
-    ✓ should not register user without required fields (23 ms)
+    ✓ should not register user without required fields (37 ms)
     ✓ should validate email format (20 ms)
   Auth Service - POST /login
-    ✓ should login user with correct credentials (374 ms)
-    ✓ should not login with incorrect password (317 ms)
-    ✓ should not login with non-existent email (193 ms)
-    ✓ should not login without email (199 ms)
-    ✓ should not login without password (223 ms)
+    ✓ should login user with correct credentials (336 ms)
+    ✓ should not login with incorrect password (307 ms)
+    ✓ should not login with non-existent email (182 ms)
+    ✓ should not login without email (170 ms)
+    ✓ should not login without password (166 ms)
   Auth Service - POST /verify
-    ✓ should verify valid token (353 ms)
-    ✓ should reject request without token (321 ms)
-    ✓ should reject invalid token (333 ms)
+    ✓ should verify valid token (323 ms)
+    ✓ should reject request without token (309 ms)
+    ✓ should reject invalid token (308 ms)
 
 Test Suites: 1 passed, 1 total
 Tests:       12 passed, 12 total
 Snapshots:   0 total
-Time:        14.823 s, estimated 17 s
+Time:        13.937 s, estimated 15 s
 Ran all test suites.
 ```
 </details>
@@ -101,4 +113,4 @@ Risk is HIGH and the only available automated validation does not directly exerc
 - Production call volume / exposure for POST /verify: Unknown / insufficient evidence (no production telemetry access in this slice).
 
 ---
-*Risk/validation rules: `repo-evidence-rules-v2`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*
+*Risk/validation rules: `repo-plus-ci-history-v3`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*

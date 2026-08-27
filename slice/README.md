@@ -1,6 +1,10 @@
 # Vertical Slice — First Implementation Milestone
 
-This is the first real implementation of the design8/design9 decision chain, scoped exactly as directed: one repository, no production/incident/organizational access, one real change, taken all the way through to a validated, explainable decision.
+This is the first real implementation of the design8/design9 decision chain, scoped exactly as directed.
+
+**Stage 1 (frozen):** one repository, no production/incident/organizational access, one real change, taken all the way through to a validated, explainable decision.
+
+**Stage 2:** the same chain, with exactly one real operational data source added — this repository's actual GitHub Actions run history — kept strictly as additive evidence, never as an input to probability or the recommendation algorithm. See "Stage 2" below.
 
 ```
 Repository / PR
@@ -37,10 +41,27 @@ Target repository: [social-media-mini](https://github.com/venusabhay/social-medi
 python3 analyze_change.py <path-to-repo> \
   --against HEAD \
   --node-bin <directory containing a working node/npm> \
+  --github-repo <owner/repo>   # optional, Stage 2: adds real CI run history
   --out reports/some-report.md
 ```
 
-The tool only reads the target repository and runs its own existing `npm test` — it never modifies, commits, or pushes anything there.
+The tool only reads the target repository (and, with `--github-repo`, this repository's public GitHub Actions run history) and runs its own existing `npm test` — it never modifies, commits, or pushes anything anywhere.
+
+## Stage 2 — adding one operational data source (CI/test-run history)
+
+Stage 1 could only ever say "the repository looks like this." It had no way to answer *"has this part of the system historically been unstable?"* Stage 2 adds exactly one operational data source to answer that — this repository's real GitHub Actions run history, pulled from the public REST API (no auth needed, no deployment required) — and nothing else. No production telemetry, no incident system, no second data source.
+
+`fetch_ci_history()` fetches every completed run of the repository's `CI` workflow, fetches job-level detail for each, and matches jobs by name to the service under review (preferring a job whose name signals it's actually a test job, e.g. `Test Microservices (auth-service)`, over one that merely mentions the service, e.g. a Docker build job). It reports counts of confirmed failures, cancellations (caused by an unrelated sibling job — explicitly not counted as a failure), and successes, over an explicit time window.
+
+**It is deliberately not wired into `probability`, `risk_level`, or the recommendation algorithm.** This was the one hard boundary set for Stage 2: a CI failure count must never become a fabricated "probability of failure," any more than a diff risk-indicator count should (the exact mistake Stage 1 caught and fixed in itself). CI history is additive evidence surfaced to a human reader in its own report section (`## HISTORICAL EVIDENCE (CI)`) and in the audit JSON (`ci_history`), not a new input to the math.
+
+**Result for the demonstration change:** across the 7 real `CI` workflow runs in this repository's history, the `Test Microservices (auth-service)` job has **0 confirmed failures** (2 runs show it cancelled due to an unrelated job failing elsewhere in the same run — not counted). The recommendation for this change did **not** change — it remains `REQUIRE_ADDITIONAL_VALIDATION`, because the reason for that recommendation (no test exercises the new caching code; high structural exposure) is independent of whether this service has historically been stable. That is reported as a valid, expected result, not a shortcoming of the experiment.
+
+### Answering the mandate's three questions
+
+1. **What did CI history add that repository-only analysis could not know?** A concrete answer to "has this area broken before?" — previously an explicit unknown, now an explicit, evidenced answer ("no confirmed failures in the examined window") rather than a gap in the report.
+2. **Did it materially improve the decision for this change?** No — the decision was already correctly `REQUIRE_ADDITIONAL_VALIDATION` for reasons CI history doesn't touch (the test-coverage gap and structural exposure). A clean CI history is reassuring context, not grounds to relax that recommendation, and the tool doesn't let it.
+3. **Is CI history worth retaining as part of the product, or should it stay optional?** Worth retaining as a standard evidence source — it's cheap (same repo, no new system, ~8 API calls, no auth), and it's the only source so far that can distinguish "we have no data" from "we checked and it's been stable." Whether it should ever influence risk_level/probability, rather than staying purely descriptive, is a real question — but not one this stage's evidence answers, and not one to decide before a change exists where CI history *does* show real historical failures for the changed area.
 
 ## Deliberate simplifications vs. the frozen design
 

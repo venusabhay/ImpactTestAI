@@ -34,9 +34,17 @@ silently substituted -- see slice/README.md for the full list):
   - RiskPolicy is a single hardcoded, versioned threshold function
     (POLICY_VERSION below), not a configurable object -- there is
     exactly one policy and one organization in this slice.
+  - Stage 2 adds ONE operational data source: this repository's own
+    GitHub Actions run history (public REST API, no auth). It is kept as
+    a clearly separate evidence category (see fetch_ci_history()) and is
+    NOT wired into probability, risk_level, or the recommendation
+    algorithm -- it is additive evidence for a human reader, exactly as
+    directed. No second operational data source (production telemetry,
+    incident systems) and no deployment are introduced at this stage.
 
-This script only ever reads the target repository and runs its own
-existing `npm test`. It does not modify, commit, or push anything there.
+This script only ever reads the target repository (and, for Stage 2, this
+repository's public GitHub Actions history) and runs its own existing
+`npm test`. It does not modify, commit, or push anything anywhere.
 """
 import argparse
 import json
@@ -44,6 +52,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 # Version of the rule-based risk/validation policy implemented below.
@@ -58,7 +68,15 @@ from datetime import datetime, timezone
 #       reported as UNKNOWN / INSUFFICIENT EVIDENCE. Risk indicators are
 #       surfaced separately and by name; they inform risk_level but are
 #       never presented as a probability.
-POLICY_VERSION = "repo-evidence-rules-v2"
+#   v3 (Stage 2): adds GitHub Actions CI run history as a second, clearly
+#       separate evidence category (fetch_ci_history()). It reports what
+#       was observed (runs examined, confirmed job failures for the
+#       changed service, time window, limitations) and is surfaced in the
+#       report and audit record. It does NOT feed into probability,
+#       risk_level, or the recommendation algorithm -- those are computed
+#       identically to v2. CI history is additive evidence for a human
+#       reader, not an automatic risk multiplier.
+POLICY_VERSION = "repo-plus-ci-history-v3"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
@@ -424,6 +442,149 @@ def build_risk_assessment(change, impact):
 
 
 # ---------------------------------------------------------------------------
+# 3B. Historical CI evidence (Stage 2's one operational data source)
+#
+# This is deliberately kept separate from build_risk_assessment(): it is
+# additive evidence for a human reader, not an input to probability,
+# risk_level, or the recommendation algorithm. See POLICY_VERSION v3 note.
+# ---------------------------------------------------------------------------
+
+def _gh_api_get(url, timeout=15):
+    req = urllib.request.Request(
+        url, headers={"Accept": "application/vnd.github+json", "User-Agent": "impacttestai-vertical-slice"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
+
+
+def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.yml", per_page=100, timeout=15):
+    """Fetch this repository's real GitHub Actions run history for the CI
+    workflow, and extract job-level outcomes relevant to `service`.
+
+    Never fabricates a result: on any network/API failure, or if no
+    matching job is found, the record says so explicitly (UNKNOWN /
+    insufficient evidence) rather than defaulting to "no history" (which
+    would be indistinguishable from "we checked and it's clean").
+    """
+    record = {
+        "available": False,
+        "source": "GitHub Actions REST API (public, unauthenticated)",
+        "repo": github_repo,
+        "workflow_path": workflow_path,
+        "runs_examined": 0,
+        "window_start": None,
+        "window_end": None,
+        "service_job_pattern": service,
+        "service_job_results": [],
+        "service_failures": 0,
+        "service_cancellations": 0,
+        "service_successes": 0,
+        "runs_with_unrelated_failures": 0,
+        "historical_signal": "UNKNOWN / insufficient evidence",
+        "limitations": [],
+        "error": None,
+    }
+    try:
+        runs_data = _gh_api_get(
+            f"https://api.github.com/repos/{github_repo}/actions/runs?per_page={per_page}", timeout=timeout
+        )
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+        record["error"] = f"{type(e).__name__}: {e}"
+        record["limitations"].append(
+            "Could not reach the GitHub Actions API -- CI history is UNKNOWN, not assumed clean or absent."
+        )
+        return record
+
+    runs = [
+        r for r in runs_data.get("workflow_runs", [])
+        if r.get("path") == workflow_path and r.get("status") == "completed"
+    ]
+    record["runs_examined"] = len(runs)
+    if runs:
+        record["window_start"] = min(r["created_at"] for r in runs)
+        record["window_end"] = max(r["created_at"] for r in runs)
+
+    used_fallback_matching = False
+    for r in runs:
+        try:
+            jobs_data = _gh_api_get(r["url"] + "/jobs", timeout=timeout)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+            record["limitations"].append(f"Could not fetch job detail for run {r['id']}: {e}")
+            continue
+
+        jobs = jobs_data.get("jobs", [])
+        # Prefer a job whose name signals it actually TESTS this service (matrix jobs are
+        # commonly named e.g. "Test Microservices (auth-service)"), rather than any job
+        # that merely mentions the service's name -- a "Docker Build Test (auth-service)"
+        # job succeeding says nothing about test correctness and would otherwise get
+        # conflated into the same count.
+        test_named = [j for j in jobs if re.search(r"\btest\b", j.get("name", ""), re.IGNORECASE)
+                      and re.search(rf"\b{re.escape(service)}\b", j.get("name", ""))
+                      and "docker" not in j.get("name", "").lower()]
+        matched = test_named if test_named else [
+            j for j in jobs if re.search(rf"\b{re.escape(service)}\b", j.get("name", ""))
+        ]
+        if not test_named and matched:
+            used_fallback_matching = True
+        other_failures = [j for j in jobs if j.get("conclusion") == "failure" and j not in matched]
+        if other_failures:
+            record["runs_with_unrelated_failures"] += 1
+
+        for j in matched:
+            entry = {
+                "run_id": r["id"], "created_at": r["created_at"],
+                "job_name": j["name"], "conclusion": j["conclusion"], "html_url": r["html_url"],
+            }
+            record["service_job_results"].append(entry)
+            if j["conclusion"] == "failure":
+                record["service_failures"] += 1
+            elif j["conclusion"] == "cancelled":
+                record["service_cancellations"] += 1
+            elif j["conclusion"] == "success":
+                record["service_successes"] += 1
+
+    record["available"] = True
+
+    if not record["service_job_results"]:
+        record["historical_signal"] = (
+            "UNKNOWN / insufficient evidence -- no CI job matching this service's name was found in the "
+            "examined history."
+        )
+    elif record["service_failures"] > 0:
+        record["historical_signal"] = (
+            f"This area has experienced {record['service_failures']} confirmed CI job failure(s) "
+            f"(conclusion 'failure', distinct from jobs merely cancelled by a sibling failing) across "
+            f"{len(record['service_job_results'])} relevant run(s) examined."
+        )
+    else:
+        record["historical_signal"] = (
+            f"No confirmed CI job failures specific to this service were found across "
+            f"{len(record['service_job_results'])} relevant run(s) examined "
+            f"({record['service_cancellations']} job(s) were CANCELLED because a different, unrelated job in "
+            f"the same run failed -- that is not evidence against this service, and is not counted as a failure)."
+        )
+
+    if used_fallback_matching:
+        record["limitations"].append(
+            f"No job name specifically indicating a test run for '{service}' was found in at least one "
+            f"examined run; some matched jobs may be non-test jobs (e.g. Docker builds) that merely mention "
+            f"'{service}' by name."
+        )
+    record["limitations"].append(
+        "A CI job failure, where one exists, does not confirm a production regression -- it may reflect a "
+        "flaky test, a dependency/environment issue, or an unrelated CI configuration problem. This history "
+        "does not distinguish those causes; a confirmed failure is evidence of past instability, not a "
+        "measured probability of future failure."
+    )
+    record["limitations"].append(
+        f"Only {record['runs_examined']} workflow run(s) on `{workflow_path}` were examined, spanning "
+        f"{record['window_start']} to {record['window_end']} -- too small and too recent a sample to support "
+        f"any calibrated statistic."
+    )
+    return record
+
+
+# ---------------------------------------------------------------------------
 # 4. Validation Decision + real execution
 # ---------------------------------------------------------------------------
 
@@ -539,7 +700,7 @@ def final_recommendation(risk, outcomes, validation_decision):
 # Report rendering
 # ---------------------------------------------------------------------------
 
-def render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo, node_bin_dir):
+def render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo, node_bin_dir, ci_history=None):
     decision, decision_reason = recommendation
     direct = [e for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
     transitive = [e for e in impact["affected_entities"] if e["impact_type"] == "TRANSITIVE"]
@@ -581,6 +742,28 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
             lines.append(f"- {ind}")
         lines.append("")
 
+    lines.append("## HISTORICAL EVIDENCE (CI)\n")
+    if not ci_history:
+        lines.append("Not collected for this run (no `--github-repo` provided). This is a separate, optional "
+                      "evidence source -- its absence does not affect the risk assessment above.\n")
+    else:
+        for svc, hist in ci_history.items():
+            lines.append(f"**{svc}**\n")
+            if not hist["available"]:
+                lines.append(f"- CI history: **UNKNOWN / insufficient evidence** ({hist['error']})\n")
+                continue
+            lines.append(f"- Source: {hist['source']} (`{hist['repo']}`, workflow `{hist['workflow_path']}`)")
+            lines.append(f"- Runs examined: {hist['runs_examined']} "
+                         f"(window: {hist['window_start']} to {hist['window_end']})")
+            lines.append(f"- Relevant job history for `{svc}`: {len(hist['service_job_results'])} run(s) matched -- "
+                         f"{hist['service_failures']} failed, {hist['service_cancellations']} cancelled "
+                         f"(due to an unrelated sibling job, not this service), {hist['service_successes']} passed")
+            lines.append(f"- **Historical signal:** {hist['historical_signal']}")
+            lines.append("- What this does NOT establish:")
+            for lim in hist["limitations"]:
+                lines.append(f"  - {lim}")
+            lines.append("")
+
     lines.append("## WHY\n")
     why = []
     if risk["structural_exposure"]["score"]:
@@ -591,6 +774,10 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     if risk["risk_indicators"]:
         why.append("The diff contains factors associated with elevated risk: " + "; ".join(risk["risk_indicators"]) +
                     ". These are indicators the risk level accounts for, not a measured probability of failure.")
+    if ci_history:
+        for svc, hist in ci_history.items():
+            if hist["available"]:
+                why.append(f"CI history for {svc}: {hist['historical_signal']}")
     if not risk["direct_test_coverage"]:
         why.append("The relevant existing test file does not import the changed module -- it duplicates the route "
                     "logic instead, so passing tests are a weak, indirect signal at best.")
@@ -638,6 +825,10 @@ def main():
                          help="Directory containing a working node/npm binary")
     parser.add_argument("--no-run", action="store_true", help="Skip actually executing validation")
     parser.add_argument("--out", default=None, help="Output report path (markdown)")
+    parser.add_argument("--github-repo", default=None,
+                         help="owner/repo on GitHub to pull CI run history from (Stage 2). Omit to skip.")
+    parser.add_argument("--no-ci-history", action="store_true",
+                         help="Skip fetching CI history even if --github-repo is given.")
     args = parser.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -650,6 +841,13 @@ def main():
     risk = build_risk_assessment(change, impact)
     validation_decision = build_validation_decision(repo, change, risk)
 
+    ci_history = {}
+    if args.github_repo and not args.no_ci_history:
+        services = sorted({service_name_from_path(p) for p in change["changed_files"] if service_name_from_path(p)})
+        for svc in services:
+            print(f"Fetching CI history for service '{svc}' from {args.github_repo}...", file=sys.stderr)
+            ci_history[svc] = fetch_ci_history(args.github_repo, svc)
+
     outcomes = []
     if not args.no_run and validation_decision["selected_validations"]:
         if not args.node_bin:
@@ -659,13 +857,15 @@ def main():
 
     recommendation = final_recommendation(risk, outcomes, validation_decision)
 
-    report = render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo, args.node_bin)
+    report = render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo,
+                            args.node_bin, ci_history)
 
     audit_record = {
         "repo": repo, "base_ref": args.against, "repo_head": change["repo_head"],
         "policy_version": POLICY_VERSION,
         "changed_files": change["changed_files"],
         "impact": impact, "risk": risk, "validation_decision": validation_decision,
+        "ci_history": ci_history,
         "outcomes": outcomes, "recommendation": {"decision": recommendation[0], "reason": recommendation[1]},
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

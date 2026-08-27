@@ -15,6 +15,7 @@ See [verify-cache-change-report.md](verify-cache-change-report.md) for the full 
 | What changed? | `auth-service`'s `POST /verify` endpoint |
 | What could be affected? | `auth-service` directly; `post-service` and `user-service` transitively (both call `/verify` on every authenticated request) |
 | Risk | **HIGH** (business impact: HIGH, exposure: HIGH). Probability is reported as **UNKNOWN**, not estimated — see Limitations below. |
+| Historical CI evidence (Stage 2) | 7 real CI runs examined; `auth-service`'s test job has 0 confirmed failures in that window (2 cancellations from unrelated sibling jobs, not counted). Additive evidence only — did not change the recommendation. |
 | Confidence | **LOW** overall — impact confidence is HIGH (directly observed in code), but evidence confidence is LOW (see limitations below) |
 | Recommended validation | Run `auth-service`'s existing test suite (`npm test`) — the best available real validation, with an explicit caveat attached |
 | Did it run? | Yes — real execution, not simulated |
@@ -55,3 +56,18 @@ Based specifically on what *this* run showed was missing — not a general wishl
 3. **CI/test-run history** (pass/fail rates over time for this service) would let future risk assessments account for whether this area of the code has a track record of breaking, rather than assessing each change in isolation.
 
 Deliberately not requested at this stage: incident-system access, business-flow documentation, or access to any other repository — none of them would have changed today's decision, and requesting them now would be exactly the "broad access because it might eventually help" pattern the business owner asked this slice to avoid.
+
+---
+
+## Stage 2 — CI/Test-Run History
+
+Added one operational data source: this repository's real GitHub Actions run history (public API, no auth, no deployment). Result for this change: across 7 real `CI` workflow runs, `auth-service`'s test job (`Test Microservices (auth-service)`) has **0 confirmed failures** — 2 runs show it cancelled because a different, unrelated job failed elsewhere in the same run, which is explicitly not counted as evidence against `auth-service`. Full detail in [verify-cache-change-report.md](verify-cache-change-report.md)'s `HISTORICAL EVIDENCE (CI)` section.
+
+**1. What did CI history add that repository-only analysis could not know?**
+A real, evidenced answer to "has this area historically been unstable?" — previously listed only as an unknown. It also surfaced a real methodological trap worth naming: this repository's *overall* CI history looks alarming at a glance (4 of the earliest 7 runs show a failing workflow), but per-job detail shows those failures were in `user-service`'s tests and the frontend build — not `auth-service`. Reporting the repo-wide failure rate without that breakdown would have wrongly implicated `auth-service`.
+
+**2. Did it materially improve the decision for this change?**
+No — the recommendation stayed `REQUIRE_ADDITIONAL_VALIDATION`. That reason (the existing test suite doesn't exercise the changed code; two services structurally depend on the endpoint) is independent of `auth-service`'s clean CI history. A clean history is reassuring context, not grounds to relax the recommendation — and per the Stage 2 mandate, that's a valid result, not a failed experiment.
+
+**3. Is CI history worth retaining as part of the product, or should it remain optional?**
+Worth retaining as a standard evidence source. It's cheap (same repository, ~8 unauthenticated API calls, no new infrastructure), and it's the first source in this project that can distinguish "we have no data" from "we checked, and it's been stable." Whether it should ever feed into `risk_level` or `probability` numerically remains an open question this experiment didn't need to answer — this change happened to have a clean CI history, so the interesting case (a changed area with a real history of CI failures) is still untested.
