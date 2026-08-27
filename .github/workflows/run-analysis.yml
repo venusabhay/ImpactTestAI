@@ -16,6 +16,12 @@ name: Run Analysis (Pilot)
 #     target repositories require a repository secret named
 #     TARGET_REPO_TOKEN (see slice/PILOT.md for the exact scopes needed).
 #     Public repositories need no token at all.
+#   - This does not require or use any WRITE permission anywhere. Artifact
+#     History (report.md/audit.json/metadata.json, each run uniquely
+#     identified by run_id) is preserved via actions/upload-artifact --
+#     GitHub's own artifact storage for this workflow run -- never by
+#     committing or pushing to any repository. `permissions: contents: read`
+#     below is unchanged from before that milestone.
 
 on:
   workflow_dispatch:
@@ -76,25 +82,47 @@ jobs:
             --against "origin/${{ inputs.base_ref }}" \
             --github-repo "${{ inputs.target_repo }}" \
             --npm-install \
+            --artifacts-root "slice/artifacts" \
             --out "slice/reports/pilot-${SAFE_NAME}-report.md"
           echo "REPORT_STEM=pilot-${SAFE_NAME}-report" >> "$GITHUB_ENV"
 
       - name: Verify expected artifacts were produced
+        # Every execution preserves report.md/audit.json/metadata.json
+        # together under slice/artifacts/<organization>/<repository>/<run_id>/
+        # (Artifact History milestone) -- this is now the durable historical
+        # record; --out above remains for direct/ad-hoc use only. Locates
+        # the run this job just produced by finding the single run
+        # directory under this target repo's path (workflow_dispatch runs
+        # one analysis per job, so exactly one is expected here).
         run: |
-          test -s "slice/reports/${REPORT_STEM}.md"
-          test -s "slice/reports/${REPORT_STEM}.audit.json"
-          python3 -c "import json; json.load(open('slice/reports/${REPORT_STEM}.audit.json'))"
+          RUN_DIR=$(find slice/artifacts -mindepth 3 -maxdepth 3 -type d | head -1)
+          test -n "$RUN_DIR"
+          test -s "$RUN_DIR/report.md"
+          test -s "$RUN_DIR/audit.json"
+          test -s "$RUN_DIR/metadata.json"
+          python3 -c "import json; json.load(open('$RUN_DIR/audit.json'))"
+          python3 -c "import json; json.load(open('$RUN_DIR/metadata.json'))"
+          RUN_ID=$(python3 -c "import json; print(json.load(open('$RUN_DIR/metadata.json'))['run_id'])")
+          echo "RUN_DIR=$RUN_DIR" >> "$GITHUB_ENV"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
 
       - name: Publish report summary
         if: always()
-        run: cat "slice/reports/${REPORT_STEM}.md" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "**Run ID:** \`${RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat "${RUN_DIR}/report.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload report and audit artifacts
+      - name: Upload this run's artifacts (report, audit, metadata)
+        # Named with the run_id so it can never collide with, or be
+        # confused for, any other execution's artifacts -- including a
+        # prior or later run against the exact same repository/commit.
+        # Nothing here is committed or pushed back to any repository;
+        # this only uploads to GitHub Actions' own artifact storage for
+        # this workflow run.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.REPORT_STEM }}
-          path: |
-            slice/reports/${{ env.REPORT_STEM }}.md
-            slice/reports/${{ env.REPORT_STEM }}.audit.json
-          retention-days: 30
+          name: run-${{ env.RUN_ID }}
+          path: ${{ env.RUN_DIR }}
+          retention-days: 90

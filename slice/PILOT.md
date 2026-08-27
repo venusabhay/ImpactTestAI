@@ -22,11 +22,14 @@ It never modifies your repository. It cannot fix anything, write code, commit, p
    | `base_ref` | What that change is proposed on top of (usually `main`) |
 
 5. Click **Run workflow**.
-6. When it finishes, open the run and download the artifact — it contains two files:
-   - `pilot-<your-repo>-report.md` — the human-readable report. Open it in any text editor, or paste it into GitHub/Slack — it's plain Markdown.
-   - `pilot-<your-repo>-report.audit.json` — the same information in a structured format, in case anyone wants to inspect it programmatically later.
+6. When it finishes, open the run and download the artifact — named `run-<run-id>`, e.g. `run-20260828T221501Z-3f9a2c11`. It contains three files:
+   - `report.md` — the human-readable report. Open it in any text editor, or paste it into GitHub/Slack — it's plain Markdown.
+   - `audit.json` — the same information in a structured format, in case anyone wants to inspect it programmatically later.
+   - `metadata.json` — a short summary (repository, exact commit analyzed, tool/policy version, decision, risk level) identifying exactly what this run was, for anyone tracking results across many runs.
 
-   The report is also printed to the workflow run's summary page, so you can often just read it there without downloading anything.
+   The report is also printed to the workflow run's summary page (along with the run ID), so you can often just read it there without downloading anything.
+
+7. **Every run is kept, permanently, on its own** — running the analysis again (even against the exact same repository and commit) never replaces or overwrites a previous run's results. Each run gets its own unique run ID and its own artifact, so you can always go back and compare what the tool said at different points in time. This is worth knowing if you're re-running the same change after a discussion, or checking whether the tool is consistent.
 
 That's it. No local setup, no cloning anything yourself, no command line required.
 
@@ -60,7 +63,7 @@ The report answers, in order:
 
 - **It only knows what's in your repository.** It has no access to your production systems, your incident history, or your business context unless that's written down in the repo itself. Where it doesn't know something, it says `UNKNOWN` — it never invents a number to fill the gap.
 - **It executes your repository's own `npm install`/`npm test`.** Only run this against a repository you'd already trust to run its own CI pipeline — this tool doesn't do anything your CI doesn't already do, but it's worth saying plainly.
-- **It currently assumes a specific repository layout**: services living under `services/<name>/`, each with its own `package.json` and a `test` script (this is the layout of the repository this pilot was originally built and proven against). If your repository is organized differently, the tool may not correctly identify what changed or what to validate — **that's exactly the kind of thing we want to hear about as pilot feedback**, not something to work around quietly.
+- **It discovers your repository's structure from evidence, not a fixed layout**: any directory with a `package.json` is treated as a component, and any `receiver.method(path, ...)` call (`app.get(...)`, `router.post(...)`, `fastify.get(...)`, or any other identifier) is treated as a route registration, regardless of formatting. It has been proven against several real, differently-structured Node.js/Express-style repositories (Express, Koa, Fastify). It is still Node.js/Express-style-convention specific: a repository using a fundamentally different registration style (e.g. NestJS's decorator routing, Fastify's config-object `.route(...)` convention, or a non-Node language) will honestly report that it found no route-level evidence rather than guess — **that's exactly the kind of thing we want to hear about as pilot feedback**, not something to work around quietly.
 - **A recommendation of "escalate" or "need more validation" is not a failure of the tool.** It means the tool found something it couldn't confidently clear on its own. That's the intended behavior, not a bug to report.
 
 ## We're not trying to prove this is perfect
