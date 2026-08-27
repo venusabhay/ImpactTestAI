@@ -125,6 +125,153 @@ def test_end_line_matches_closing_brace():
 
 
 # ---------------------------------------------------------------------------
+# Formatting-independent (multiline) route span detection -- found necessary
+# via v8 held-out testing: a route call whose path argument is on a
+# following line from `receiver.method(` was never detected at all (0/9
+# real routes in one held-out repository, 7/21 in another). General fix:
+# find the call site with a narrow regex matching only `receiver.method(`,
+# then read its arguments via the existing general-purpose
+# _extract_balanced()/_split_top_level() helpers, which work identically
+# regardless of line breaks. See slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md.
+# ---------------------------------------------------------------------------
+
+def test_single_line_route_still_detected():
+    src = 'router.get("/users", handler);\n'
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/users"
+    assert regs[0]["method"] == "GET"
+
+
+def test_multiline_route_with_path_on_its_own_line():
+    src = (
+        "router.get(\n"
+        '  "/users",\n'
+        "  authMiddleware,\n"
+        "  handler\n"
+        ");\n"
+    )
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["receiver"] == "router"
+    assert regs[0]["method"] == "GET"
+    assert regs[0]["path"] == "/users"
+    assert regs[0]["middleware_args"] == ["authMiddleware", "handler"]
+    assert regs[0]["start_line"] == 1
+    assert regs[0]["end_line"] == 5
+
+
+def test_multiline_route_matches_single_line_equivalent_exactly():
+    """Multiline formatting must not change what is discovered -- same
+    receiver, method, path, and middleware args as the single-line form."""
+    single = 'router.get("/users", authMiddleware, handler);\n'
+    multi = (
+        "router.get(\n"
+        '  "/users",\n'
+        "  authMiddleware,\n"
+        "  handler\n"
+        ");\n"
+    )
+    reg_single = discovery.find_route_registrations(single)[0]
+    reg_multi = discovery.find_route_registrations(multi)[0]
+    for key in ("receiver", "method", "path", "middleware_args"):
+        assert reg_single[key] == reg_multi[key]
+
+
+def test_multiline_arguments_object_literal_kept_whole():
+    """A config-object argument (e.g. Fastify's route-options convention)
+    must not be split on its internal commas, and must not itself be
+    mistaken for a middleware identifier."""
+    src = (
+        "fastify.get(\n"
+        '  "/",\n'
+        "  {\n"
+        "    preHandler: [fastify.checkToken],\n"
+        "    schema: getAllUsersSchema\n"
+        "  },\n"
+        "  async (_, reply) => {\n"
+        "    return reply.send([]);\n"
+        "  }\n"
+        ");\n"
+    )
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/"
+    # The object literal isn't a bare/dotted identifier -- correctly excluded.
+    assert regs[0]["middleware_args"] == []
+
+
+def test_nested_parens_brackets_braces_inside_multiline_call():
+    src = (
+        "router.post(\n"
+        '  "/widgets",\n'
+        "  validate(schema({ strict: true, tags: [1, 2, (3 + 4)] })),\n"
+        "  async (req, res) => {\n"
+        "    if (req.body) {\n"
+        "      doThing([1, 2, 3].map((x) => x + 1));\n"
+        "    }\n"
+        "  }\n"
+        ");\n"
+    )
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/widgets"
+    # validate(...) is a call expression, not a bare identifier -- excluded.
+    assert regs[0]["middleware_args"] == []
+    assert regs[0]["end_line"] == 9
+
+
+def test_multiple_routes_same_file_mixed_formatting():
+    src = (
+        'router.get("/a", handlerA);\n'
+        "router.post(\n"
+        '  "/b",\n'
+        "  middlewareB,\n"
+        "  handlerB\n"
+        ");\n"
+        'router.delete("/c", handlerC);\n'
+    )
+    regs = discovery.find_route_registrations(src)
+    assert [(r["method"], r["path"]) for r in regs] == [
+        ("GET", "/a"),
+        ("POST", "/b"),
+        ("DELETE", "/c"),
+    ]
+    assert regs[1]["middleware_args"] == ["middlewareB", "handlerB"]
+
+
+def test_multiline_route_inside_comment_is_not_detected():
+    src = (
+        "// router.get(\n"
+        '//   "/fake",\n'
+        "//   handler\n"
+        "// );\n"
+        "const real = 1;\n"
+    )
+    assert discovery.find_route_registrations(src) == []
+
+
+def test_multiline_route_with_string_containing_code_shaped_text():
+    """A string literal that happens to contain route-call-shaped text must
+    not be mistaken for arguments of the real call, and must not itself be
+    misparsed as ending the balanced span early (e.g. via a stray `)` or
+    `,` inside the string)."""
+    src = (
+        "router.post(\n"
+        '  "/log",\n'
+        "  async (req, res) => {\n"
+        '    console.log("example: app.get(\\"/fake\\", handler)");\n'
+        "    res.send({});\n"
+        "  }\n"
+        ");\n"
+    )
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/log"
+    assert regs[0]["end_line"] == 7
+
+
+# ---------------------------------------------------------------------------
 # Exported-name discovery
 # ---------------------------------------------------------------------------
 

@@ -64,7 +64,7 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.6.0-pilot"
+TOOL_VERSION = "0.7.0-pilot"
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -157,7 +157,27 @@ TOOL_VERSION = "0.6.0-pilot"
 #       happen to share a property name. No change to any formula,
 #       threshold, or decision rule; no change to RiskAssessment/
 #       probability/risk_level semantics.
-POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v8"
+#   v9 (ADAPT_ARCHITECTURE_DISCOVERY, formatting-independent route
+#       detection): fixes the gap found in the v8 held-out round --
+#       find_route_registrations() required a call's receiver, method, AND
+#       its path string literal to all appear on the SAME source line,
+#       silently missing any call formatted with the path on a following
+#       line (measured 0/9 and 7/21 real routes detected in two held-out
+#       repositories before this fix). Replaced with two independent
+#       steps, see discovery.py and slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md:
+#       (1) a narrow regex finds only `receiver.method(` -- the part
+#       guaranteed to be on one line in practice; (2) the existing general-
+#       purpose _extract_balanced()/_split_top_level() helpers (already
+#       used for the v8 object-literal-export fix) read the call's
+#       arguments regardless of how many lines they span. Also subsumes
+#       and simplifies the old _extract_middleware_args() entirely (its
+#       hand-sliced, formatting-sensitive string logic, including the v7
+#       trailing-semicolon fix, is no longer needed once arguments are
+#       read via exact balanced-span splitting). No change to any formula,
+#       threshold, or decision rule; no change to RiskAssessment/
+#       probability/risk_level semantics; no change to what counts as a
+#       middleware argument (still bare/dotted identifiers only).
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v9"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic

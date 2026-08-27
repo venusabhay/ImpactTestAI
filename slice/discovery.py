@@ -95,9 +95,11 @@ def strip_comments(text):
         i += 1
     return "".join(result)
 
-ROUTE_CALL_RE = re.compile(r"\b(\w+)\.(get|post|put|delete|patch|all)\(\s*[\"'`](/[^\"'`]*)[\"'`]")
+ROUTE_METHOD_RE = re.compile(r"\b(\w+)\.(get|post|put|delete|patch|all)\(")
 
-HANDLER_START_RE = re.compile(r"(async\s*\(|\([^)]*\)\s*=>|function\s*\(|=>\s*\{)")
+_IDENTIFIER_ARG_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$.]*")
+
+_PATH_ARG_RE = re.compile(r"[\"'`](/[^\"'`]*)[\"'`]")
 
 
 # ---------------------------------------------------------------------------
@@ -158,78 +160,74 @@ def component_root_dir(name, components):
 # 2. Route discovery (generalizes app.METHOD(...) to any receiver)
 # ---------------------------------------------------------------------------
 
-def _extract_middleware_args(call_text, path):
-    """Best-effort extraction of bare-identifier arguments between the route
-    path and the final handler (Express's inline-middleware convention:
-    receiver.method(path, middlewareFn, handler)). Regex-based heuristic,
-    not a real parser -- see module docstring."""
-    idx = call_text.find(path)
-    if idx == -1:
-        return []
-    after = call_text[idx + len(path):]
-    if after[:1] in "\"'`":
-        after = after[1:]
-    cut = HANDLER_START_RE.search(after)
-    segment = after[:cut.start()] if cut else after
-    args = []
-    for token in segment.split(","):
-        # Strips wrapping parens AND trailing statement punctuation (`;`)/
-        # whitespace. Needed for the case with no inline-function handler at
-        # all (e.g. `router.get(path, controller.method);`) -- there,
-        # `segment` runs all the way to the end of the source line,
-        # trailing semicolon included, since no HANDLER_START_RE match
-        # exists to cut it off earlier. Without stripping `;` here, a bare
-        # or dotted final-handler reference would never match the
-        # identifier pattern below, and controller-method dependency
-        # tracing could never fire for this (common) calling style.
-        token = token.strip().strip("();").strip()
-        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$.]*", token) and token not in ("async",):
-            args.append(token)
-    return args
+def _line_number_at(text, index):
+    """1-indexed line number of the character at `index` in `text`."""
+    return text.count("\n", 0, index) + 1
+
+
+def _middleware_args_from_call(args):
+    """Given the top-level arguments AFTER the path (already split by
+    _split_top_level, so each one is exactly one argument regardless of how
+    many lines or internal commas it spans), keeps whichever are bare
+    identifiers or dotted property-access chains -- the general shape a
+    middleware reference OR a class-instance-method final handler can take
+    (see _resolve_arg_to_export). An inline function, arrow function, call
+    expression (`validate(schema)`), or object literal
+    (`{ preHandler: [...] }`) never matches this and is correctly excluded
+    -- same filter _extract_middleware_args applied per-token, just fed
+    exact arguments instead of a hand-sliced, formatting-sensitive string."""
+    kept = []
+    for arg in args:
+        token = arg.strip()
+        if _IDENTIFIER_ARG_RE.fullmatch(token):
+            kept.append(token)
+    return kept
 
 
 def find_route_registrations(file_text):
-    """Generalized route detection: ANY receiver.method(path, ...) call, not
-    only app.method(...). The receiver's name is captured but never
-    constrained -- it is a per-file styling choice (app/router/server/...),
-    not architectural evidence.
+    """Generalized, formatting-independent route detection: ANY
+    receiver.method(path, ...) call, not only app.method(...), regardless
+    of how the call's arguments are split across lines. The receiver's name
+    is captured but never constrained -- it is a per-file styling choice
+    (app/router/server/fastify/...), not architectural evidence.
+
+    Two independent steps (see slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md):
+    find the call site with a narrow regex matching only
+    `receiver.method(` (guaranteed to be on one line in practice), then
+    read its arguments via the general-purpose, string-aware
+    _extract_balanced()/_split_top_level() helpers -- which work
+    identically whether the call spans one line or many. Replaces the
+    prior approach, which matched the call AND its path with one
+    single-line regex, and so silently missed any call formatted with the
+    path argument on a following line (a common Prettier/Standard style;
+    found via held-out testing to miss 0-100% of real routes in affected
+    repositories, depending on formatting consistency).
 
     Comment-aware: file_text is passed through strip_comments() first, so a
     code-shaped example inside a // or /* */ comment is not mistaken for a
     real route registration (found via held-out testing)."""
     file_text = strip_comments(file_text)
-    lines = file_text.splitlines()
     registrations = []
-    for i, line in enumerate(lines):
-        m = ROUTE_CALL_RE.search(line)
-        if not m:
+    for m in ROUTE_METHOD_RE.finditer(file_text):
+        receiver, method = m.group(1), m.group(2)
+        open_idx = m.end() - 1  # index of the call's opening '('
+        call_args_text = _extract_balanced(file_text, open_idx, "(", ")")
+        if call_args_text is None:
+            continue  # unbalanced/truncated input -- no evidence, not a crash
+        args = _split_top_level(call_args_text)
+        if not args:
             continue
-        receiver, method, path = m.group(1), m.group(2), m.group(3)
-        start_idx = m.start()
-        depth = 0
-        end_line = i
-        started = False
-        call_parts = []
-        for j in range(i, len(lines)):
-            segment = lines[j][start_idx:] if j == i else lines[j]
-            call_parts.append(segment)
-            for ch in segment:
-                if ch == "(":
-                    depth += 1
-                    started = True
-                elif ch == ")":
-                    depth -= 1
-            if started and depth <= 0:
-                end_line = j
-                break
-        call_text = "\n".join(call_parts)
+        path_match = _PATH_ARG_RE.fullmatch(args[0].strip())
+        if not path_match:
+            continue  # first argument isn't a `/`-prefixed string literal -- not a route call
+        close_idx = open_idx + 1 + len(call_args_text)  # index of the matching ')'
         registrations.append({
             "receiver": receiver,
             "method": method.upper(),
-            "path": path,
-            "middleware_args": _extract_middleware_args(call_text, path),
-            "start_line": i + 1,
-            "end_line": end_line + 1,
+            "path": path_match.group(1),
+            "middleware_args": _middleware_args_from_call(args[1:]),
+            "start_line": _line_number_at(file_text, m.start()),
+            "end_line": _line_number_at(file_text, close_idx),
         })
     return registrations
 
