@@ -14,4 +14,4 @@ A change-risk intelligence and validation decision platform: given a code change
 
 ## What this is not, yet
 
-This is a pilot, not a finished product. It reads a target repository read-only, executes that repository's own tests, and reports — it does not fix code, write tests, commit, push, merge, or deploy anything. It currently assumes a `services/<name>/` repository layout (see `slice/PILOT.md` for what that means for you). Where it doesn't have enough evidence to say something with confidence, it says `UNKNOWN` rather than guessing — that's deliberate, not a limitation to work around.
+This is a pilot, not a finished product. It reads a target repository read-only, executes that repository's own tests, and reports — it does not fix code, write tests, commit, push, merge, or deploy anything. It discovers a repository's structure from evidence (`package.json` files, route-registration calls) rather than assuming any fixed layout — see `slice/PILOT.md` for what it can and can't currently recognize. Where it doesn't have enough evidence to say something with confidence, it says `UNKNOWN` rather than guessing — that's deliberate, not a limitation to work around.

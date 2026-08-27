@@ -1,5 +1,7 @@
 # Next Milestone — Scope Decision (Business Checkpoint After v6)
 
+> **STATUS: superseded — this milestone was completed in v7.** Recorded here as a historical record of the business checkpoint; the "no implementation work has started" statement below was true only at the time this was written, immediately after v6. Both items in this document's scope (comment-aware scanning, controller-method dependency tracing) were implemented, tested, and accepted in [`ADAPT_ARCHITECTURE_DISCOVERY_v7_final_report.md`](ADAPT_ARCHITECTURE_DISCOVERY_v7_final_report.md). Architecture discovery went on to reach `PASS` at v9.
+
 Recorded after review of the v6 held-out results. **No implementation work has started on this.** This document defines scope for whenever the business owner greenlights it — it is not itself the greenlight.
 
 ## Business recommendation

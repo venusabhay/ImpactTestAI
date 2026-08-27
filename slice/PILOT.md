@@ -56,7 +56,7 @@ The report answers, in order:
 4. What CI history says about this area of the code, if any exists
 5. What validation it recommends, and why
 6. Whether that validation actually ran, and what happened
-7. A final recommendation: **proceed**, **need more validation first**, or **escalate to a human** (this last one means: don't proceed without someone looking at it)
+7. A final recommendation: **need more validation first**, or **escalate to a human** (this last one means: don't proceed without someone looking at it). In practice, today, that's always one of these two — the tool's current risk policy treats its own repo-only evidence as never quite confident enough to clear a change on its own, so it has not yet told anyone to simply proceed. That's a deliberate, disclosed characteristic of the current policy, not a malfunction — see [`PILOT_FEEDBACK_TEMPLATE.md`](PILOT_FEEDBACK_TEMPLATE.md) if this matters for how your team would use the tool.
 8. What it explicitly does *not* know (production usage, historical incidents, etc.) — it will never guess at these
 
 ## Important things to know before you run it
