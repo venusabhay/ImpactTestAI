@@ -3,6 +3,8 @@
 **Tool version:** `0.2.0-pilot` **Policy version:** `repo-plus-ci-plus-cross-service-v4` (unmodified — engineering did not adapt the analyzer for this repository before or during this experiment)
 **Target repository:** `/Users/abhay/git-venusabhay/user-management-app` (`venusabhay/user-management-app`), single commit (`First-commit`) on `main`. No history existed to draw real past changes from, so three isolated local experiment branches were created for analysis (not pushed): `experiment/change-a-api-cache`, `experiment/change-b-frontend-validation`, `experiment/change-c-cross-component-contract`.
 
+> **Status: accepted as the Stage 2C milestone**, per business review. The three changes analyzed here are preserved as reusable fixtures in [`fixtures/`](fixtures/) for re-testing the next architecture-discovery capability against, with acceptance criteria recorded in [`RERUN_ACCEPTANCE_CRITERIA.md`](RERUN_ACCEPTANCE_CRITERIA.md). Do not hand-fix these reports or special-case these files/this repository in the analyzer — see that document for why.
+
 ---
 
 ## Executive Summary

@@ -1,0 +1,47 @@
+From c32bf95d6832665cd2dd37b1c886abfaeba754c6 Mon Sep 17 00:00:00 2001
+From: Abhay Ranjan <abhay@Abhays-MacBook-Air.local>
+Date: Thu, 27 Aug 2026 21:08:19 +0530
+Subject: [PATCH] feat: add client-side password confirmation validation to
+ Register form
+
+---
+ user-management-frontend/src/pages/Register.jsx | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/user-management-frontend/src/pages/Register.jsx b/user-management-frontend/src/pages/Register.jsx
+index 9ae3f38..8e53769 100644
+--- a/user-management-frontend/src/pages/Register.jsx
++++ b/user-management-frontend/src/pages/Register.jsx
+@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
+ const API_URL = import.meta.env.VITE_API_URL;
+ 
+ export default function Register() {
+-  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", password: "", role: "user" });
++  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", password: "", confirmPassword: "", role: "user" });
+   const [message, setMessage] = useState("");
+   const navigate = useNavigate();
+ 
+@@ -13,6 +13,12 @@ export default function Register() {
+ 
+   const handleSubmit = async (e) => {
+     e.preventDefault();
++
++    if (form.password !== form.confirmPassword) {
++      setMessage("❌ Passwords do not match");
++      return;
++    }
++
+     setMessage("Processing...");
+ 
+     try {
+@@ -43,6 +49,7 @@ export default function Register() {
+           <input name="lastName" placeholder="Last Name" onChange={handleChange} style={inputStyle} />
+           <input name="email" placeholder="Email" onChange={handleChange} style={inputStyle} />
+           <input name="password" type="password" placeholder="Password" onChange={handleChange} style={inputStyle} />
++          <input name="confirmPassword" type="password" placeholder="Confirm Password" onChange={handleChange} style={inputStyle} />
+           <select name="role" value={form.role} onChange={handleChange} style={inputStyle}>
+             <option value="user">User</option>
+             <option value="admin">Admin</option>
+-- 
+2.37.1 (Apple Git-137.1)
+

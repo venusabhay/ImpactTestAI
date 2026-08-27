@@ -1,0 +1,49 @@
+From 82dfbb08e90e6a210c9df28fcad03f381982746e Mon Sep 17 00:00:00 2001
+From: Abhay Ranjan <abhay@Abhays-MacBook-Air.local>
+Date: Thu, 27 Aug 2026 21:07:26 +0530
+Subject: [PATCH] perf: cache JWT verification results for 5s to reduce DB load
+ in protect middleware
+
+---
+ user-management-api/middleware/authMiddleware.js | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/user-management-api/middleware/authMiddleware.js b/user-management-api/middleware/authMiddleware.js
+index 6dab0d7..a5e373a 100644
+--- a/user-management-api/middleware/authMiddleware.js
++++ b/user-management-api/middleware/authMiddleware.js
+@@ -1,6 +1,11 @@
+ import jwt from "jsonwebtoken";
+ import User from "../models/userModel.js";
+ 
++// Short-lived in-memory cache to reduce repeated User.findById lookups
++// for the same token during bursts of requests from the same client.
++const authCache = new Map(); // token -> { user, expiresAt }
++const AUTH_CACHE_TTL_MS = 5000;
++
+ // -----------------------------
+ // Protect routes - verify JWT
+ // -----------------------------
+@@ -12,12 +17,19 @@ export const protect = async (req, res, next) => {
+     try {
+       token = req.headers.authorization.split(" ")[1];
+ 
++      const cached = authCache.get(token);
++      if (cached && cached.expiresAt > Date.now()) {
++        req.user = cached.user;
++        return next();
++      }
++
+       // Verify JWT
+       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+ 
+       // Attach user to request, exclude password
+       req.user = await User.findById(decoded.id).select("-password");
+ 
++      authCache.set(token, { user: req.user, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
+       next();
+     } catch (error) {
+       console.error("JWT verification failed:", error);
+-- 
+2.37.1 (Apple Git-137.1)
+

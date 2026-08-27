@@ -1,0 +1,33 @@
+From 32617fe16c182a43f5b441d7b76b992e9460edd6 Mon Sep 17 00:00:00 2001
+From: Abhay Ranjan <abhay@Abhays-MacBook-Air.local>
+Date: Thu, 27 Aug 2026 21:08:46 +0530
+Subject: [PATCH] refactor: read refresh token from Authorization header
+ instead of cookie
+
+---
+ user-management-api/routes/userRoutes.js | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/user-management-api/routes/userRoutes.js b/user-management-api/routes/userRoutes.js
+index 1886094..fc3b16c 100644
+--- a/user-management-api/routes/userRoutes.js
++++ b/user-management-api/routes/userRoutes.js
+@@ -69,8 +69,14 @@ router.post("/login", async (req, res) => {
+ });
+ 
+ // REFRESH TOKEN
++// Changed to read the refresh token from the Authorization header instead
++// of the jwt_refresh cookie, to simplify deployment behind proxies that
++// strip cookies. NOTE: the frontend (user-management-frontend/src/utils/api.js)
++// still calls this endpoint expecting cookie-based refresh and does not send
++// an Authorization header on this call -- this is the cross-component
++// change under review.
+ router.get("/refresh", async (req, res) => {
+-  const refreshToken = req.cookies.jwt_refresh;
++  const refreshToken = req.headers.authorization?.split(" ")[1];
+   if (!refreshToken) return res.status(401).json({ message: "No refresh token" });
+ 
+   try {
+-- 
+2.37.1 (Apple Git-137.1)
+
