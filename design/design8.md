@@ -202,7 +202,21 @@ Incident
 
 ### Object: `Relationship`
 
-**Purpose:** A typed, structural edge between two entities. Relationships no longer carry confidence or evidence directly — they reference a `Claim` (§6), which carries the interpretive weight.
+**Purpose:** A typed, structural, **graph-indexable projection** of a `Claim` (§6) — it exists so the graph store can traverse "what connects to what" efficiently. It is not a second, independent source of truth about belief or validity.
+
+**`Relationship` is derived, not authored (invariant — closes the ambiguity identified in architect review):**
+
+```text
+Claim created/superseded
+        │
+        ▼
+Relationship projection is (re)materialized from it
+```
+
+* `Relationship` carries **no independently authored semantic, validity, or confidence state.** Every field describing *whether this is true, how confident we are, or when it was/is valid* lives exclusively on the `Claim` referenced by `claim_ref`.
+* `Relationship.observed_at`, `valid_from`, and `valid_to` are **copied from, and must always equal, the corresponding fields on the current `Claim`** — they exist on `Relationship` only to make the graph store's own indexes and traversal queries fast, not because `Relationship` independently decides temporal validity.
+* When a `Claim` is superseded (§6 — `status: SUPERSEDED`, new `Claim` created), the `Relationship` projection is **re-materialized** to reflect the new `Claim`: this may mean updating the existing `Relationship`'s `claim_ref`/temporal fields to point at the new `Claim`, or retiring the old projection and creating a new one — either is an acceptable *implementation* of the same invariant, but neither implementation may leave a `Relationship` pointing at a `SUPERSEDED` Claim as if it were still current.
+* **No component may write to `Relationship.valid_from`/`valid_to`/`observed_at` directly.** The only legitimate write path is: create or supersede a `Claim`, then re-derive the `Relationship` projection from it. This is what prevents `Relationship` and `Claim` from being interpreted, or implemented, as two independent sources of truth that can silently disagree.
 
 **Schema:**
 ```text
@@ -212,9 +226,9 @@ Relationship
 ├── relationship_type
 ├── target_entity
 ├── claim_ref
-├── observed_at
-├── valid_from
-└── valid_to
+├── observed_at        # derived — mirrors claim_ref.Claim.observed equivalent
+├── valid_from          # derived — mirrors claim_ref.Claim.valid_from
+└── valid_to            # derived — mirrors claim_ref.Claim.valid_to
 ```
 
 **Controlled relationship types (initial set):**
@@ -231,7 +245,7 @@ Outcome ──correlated_with─────> Incident
 Change ──affects──────────────> Entity
 ```
 
-**Invariant:** A `Relationship` without a `claim_ref` is invalid — structure alone does not imply belief; belief comes from the referenced Claim.
+**Invariant:** A `Relationship` without a `claim_ref` is invalid — structure alone does not imply belief; belief comes from the referenced Claim, and only from the referenced Claim.
 
 ---
 
@@ -421,6 +435,9 @@ Note the change from the prior draft: `evidence_refs[]` and `analyzer_versions[]
 RiskAssessment
 ├── assessment_id
 ├── change_ref
+├── impact_assessment_ref
+├── supporting_claim_refs[]
+├── supporting_evidence_refs[]
 ├── probability
 ├── business_impact
 ├── exposure
@@ -430,6 +447,8 @@ RiskAssessment
 ├── decision_context_ref
 └── created_at
 ```
+
+**Provenance fields (added — closes the audit-chain gap identified in architect review):** `ImpactAssessment` carries a `claim_ref` per affected entity, so "why do we believe this is affected?" is always answerable. Prior to this revision, `RiskAssessment` had no equivalent — the chain of evidence stopped one hop too early. `impact_assessment_ref` points to the specific `ImpactAssessment` this risk was derived from; `supporting_claim_refs[]` and `supporting_evidence_refs[]` name the *specific* Claims and Evidence that actually informed `probability` and `probability_confidence` — not merely "everything in the `DecisionContext.evidence_snapshot`," which is the entire evidence state at that time, not the subset that mattered to this number. This is what makes "why is `probability_confidence` 0.64?" answerable from the `RiskAssessment` object itself, the same way §10's own debugging example implies it should be.
 
 **`confidence` is decomposed, not a single opaque number:**
 ```text
@@ -470,6 +489,8 @@ risk_level MUST NOT be treated as a substitute for its constituent dimensions.
 `risk_level` exists purely as a convenient vocabulary (`LOW | MEDIUM | HIGH | CRITICAL`) for policy rules to key off of (§15) — any component reasoning about *why* a risk is what it is must read the underlying dimensions, never `risk_level` alone.
 
 **Note on formula:** No formula (e.g. `probability × impact × confidence`) is fixed by this contract. `RiskAssessment` is a domain contract; the algorithm producing it is replaceable (rules today, a statistical or ML model later) — see §18.
+
+**Invariant:** `supporting_claim_refs[]` must be non-empty whenever `probability > 0` is asserted on evidence rather than pure policy default — a `RiskAssessment` that cites no Claims is only valid as a default/floor assessment (e.g. "no impact detected, therefore minimal risk"), never as a substantive risk finding.
 
 **Produced by:** Risk Engine.
 
@@ -1091,3 +1112,7 @@ PR → ImpactAssessment → RiskAssessment → ValidationDecision → Outcome �
 is done when two things are true: an engineer can implement each object above without reinterpreting intent, and given an identical `DecisionContext`, any decision along this chain can be exactly reproduced.
 
 **This document is frozen at the domain-contract level, effective this revision.** Further domain refinement is expected to yield diminishing returns; the unresolved questions from here are physical and runtime, not conceptual. The next document, [design9.md](design9.md) — **System Architecture & Runtime Design** — changes the question from *"what should this platform mean?"* to *"how do we actually build and operate this platform at production scale?"*
+
+**Post-freeze amendment:** an independent architect review of design8/design9 found no blocking issues and confirmed the design is mature enough for implementation. It identified two contract-level gaps, now fixed above: (1) `RiskAssessment` lacked provenance back to the specific `ImpactAssessment`/Claims/Evidence that produced it (§10, `impact_assessment_ref`/`supporting_claim_refs[]`/`supporting_evidence_refs[]` added); (2) `Relationship` and `Claim` risked being implemented as two independent, potentially disagreeing sources of truth (§5, `Relationship` is now explicitly a derived projection with no independently authored temporal or belief state). All other review findings (mid-flight `DecisionContext` staleness, `Outcome.cause_ref` typing, bi-temporal traversal semantics under concurrent ingestion, `estimate()` cold-start, escalation-loop iteration bounds) are deliberately deferred to the vertical-slice implementation, not resolved here — they are implementation questions, not open domain-contract questions.
+
+**The architecture phase is complete:** design1.md–design7.md (conceptual evolution) → design8.md (frozen domain contracts) → design9.md (physical/runtime architecture) → independent architect review → these two targeted corrections → implementation. The next artifact is the vertical slice itself, not another design document.
