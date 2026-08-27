@@ -1,0 +1,67 @@
+name: Pilot CI
+
+# Makes the vertical-slice pilot repeatably executable -- proves the
+# analyzer itself works, on every push/PR, using a self-contained fixture.
+# This workflow never checks out or touches any other team's repository.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ImpactTestAI
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install analyzer test dependencies
+        run: pip install pytest
+
+      - name: Run analyzer unit tests
+        run: python3 -m pytest slice/tests/ -v
+
+      - name: Build fixture repository
+        id: fixture
+        run: |
+          WORKDIR=$(bash slice/fixtures/setup_fixture.sh)
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
+
+      - name: Run analyzer against fixture (smoke test)
+        run: |
+          python3 slice/analyze_change.py "${{ steps.fixture.outputs.workdir }}" \
+            --against HEAD \
+            --npm-install \
+            --out slice/reports/pilot-ci-smoke-report.md
+
+      - name: Verify expected artifacts were produced
+        run: |
+          test -s slice/reports/pilot-ci-smoke-report.md
+          test -s slice/reports/pilot-ci-smoke-report.audit.json
+          python3 -c "import json; json.load(open('slice/reports/pilot-ci-smoke-report.audit.json'))"
+
+      - name: Upload report and audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-ci-smoke-artifacts
+          path: |
+            slice/reports/pilot-ci-smoke-report.md
+            slice/reports/pilot-ci-smoke-report.audit.json
+          retention-days: 14

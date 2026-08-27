@@ -56,6 +56,14 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+# Version of this script itself (the code/mechanics), distinct from
+# POLICY_VERSION (the risk/validation rules it implements). Bump on any
+# change to the analyzer's behavior, output shape, or CLI surface, so a
+# report can always be traced to exactly which code produced it -- not
+# just which rules. Independent axis from POLICY_VERSION: the same tool
+# version can run under different policy versions and vice versa.
+TOOL_VERSION = "0.2.0-pilot"
+
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
 # or their thresholds change, so a given report/audit record always states
@@ -255,8 +263,13 @@ def test_file_imports_module(repo, test_file, module_basename):
         return None
     with open(path, "r", errors="ignore") as f:
         text = f.read()
-    return bool(re.search(rf"""(from|require)\(?['"]\.?/?{re.escape(module_basename)}['"]""", text)) \
-        or bool(re.search(rf"""(from|require)\(?['"]\./{re.escape(module_basename.replace('.js',''))}['"]""", text))
+    # \s* between (from|require) and the opening quote: ES module syntax
+    # ("from './server.js'") always has a space there; require('./server')
+    # does not. A prior version of this regex omitted \s* and silently
+    # produced false negatives (reported "does not import" for a test file
+    # that plainly does) -- caught by tests/test_analyze_change.py.
+    return bool(re.search(rf"""(from|require)\s*\(?['"]\.?/?{re.escape(module_basename)}['"]""", text)) \
+        or bool(re.search(rf"""(from|require)\s*\(?['"]\./{re.escape(module_basename.replace('.js',''))}['"]""", text))
 
 
 def build_impact_assessment(repo, change):
@@ -720,10 +733,16 @@ def build_validation_decision(repo, change, risk):
     return {"selected_validations": selected, "rejected_validations": rejected}
 
 
-def run_validation(repo, node_bin_dir, selected):
+def run_validation(repo, node_bin_dir, selected, npm_install=False):
     outcomes = []
     env = os.environ.copy()
-    env["PATH"] = f"{node_bin_dir}:{env.get('PATH', '')}"
+    if node_bin_dir:
+        env["PATH"] = f"{node_bin_dir}:{env.get('PATH', '')}"
+    # If node_bin_dir is empty, run with the inherited PATH as-is -- this is
+    # the normal case on a clean machine or CI runner where `node`/`npm`
+    # already resolve correctly. --node-bin exists for environments (like
+    # the original developer's machine) where the default `node` on PATH is
+    # broken and a specific install must be prepended.
     for v in selected:
         if v["type"] == "E2E_TEST":
             # Not independently executable: it's covered by the INTEGRATION_TEST
@@ -732,6 +751,25 @@ def run_validation(repo, node_bin_dir, selected):
             # 'npm test' invocation). Its result is reflected there.
             continue
         svc_dir = os.path.join(repo, "services", v["target"])
+        if npm_install:
+            # A fresh checkout (e.g. in CI) has no node_modules. This is an
+            # execution-environment concern, not a decision-policy one --
+            # it doesn't change what gets selected or how outcomes are
+            # judged, only whether the command can run at all. Off by
+            # default so Stage 1/2/2B's exact prior behavior (dependencies
+            # installed manually beforehand) is unaffected.
+            install = subprocess.run(
+                "npm install", cwd=svc_dir, shell=True, capture_output=True, text=True, timeout=300, env=env,
+            )
+            if install.returncode != 0:
+                outcomes.append({
+                    "target": v["target"], "command": "npm install", "result": "INCONCLUSIVE",
+                    "exit_code": install.returncode,
+                    "stdout_tail": "\n".join(install.stdout.splitlines()[-25:]),
+                    "stderr_tail": "\n".join(install.stderr.splitlines()[-25:]),
+                    "classification": "INFRASTRUCTURE (dependency install failed)",
+                })
+                continue
         try:
             result = subprocess.run(
                 v["command"], cwd=svc_dir, shell=True, capture_output=True, text=True, timeout=180, env=env,
@@ -899,15 +937,16 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
         lines.append(f"- {u}")
     lines.append("")
 
-    lines.append(f"---\n*Risk/validation rules: `{risk['policy_version']}`. "
-                  f"Re-running this analysis with the same policy version against the same repo state and "
-                  f"ref should reproduce this exact assessment.*")
+    lines.append(f"---\n*Tool version: `{TOOL_VERSION}`. Risk/validation rules: `{risk['policy_version']}`. "
+                  f"Re-running this analysis with the same tool and policy version against the same repo "
+                  f"state and ref should reproduce this exact assessment.*")
 
     return "\n".join(lines)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Vertical-slice change-risk analyzer (design8/9 slice).")
+    parser.add_argument("--version", action="version", version=f"tool={TOOL_VERSION} policy={POLICY_VERSION}")
     parser.add_argument("repo", help="Path to the target repository")
     parser.add_argument("--against", default="HEAD", help="Git ref to diff the working tree against")
     parser.add_argument("--node-bin", default=os.environ.get("NODE_BIN_DIR", ""),
@@ -918,6 +957,9 @@ def main():
                          help="owner/repo on GitHub to pull CI run history from (Stage 2). Omit to skip.")
     parser.add_argument("--no-ci-history", action="store_true",
                          help="Skip fetching CI history even if --github-repo is given.")
+    parser.add_argument("--npm-install", action="store_true",
+                         help="Run 'npm install' before each selected validation (for a fresh checkout, e.g. in CI). "
+                              "Off by default to preserve prior Stage 1/2/2B behavior exactly.")
     args = parser.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -939,10 +981,11 @@ def main():
 
     outcomes = []
     if not args.no_run and validation_decision["selected_validations"]:
-        if not args.node_bin:
-            print("WARNING: --node-bin not provided; skipping execution.", file=sys.stderr)
-        else:
-            outcomes = run_validation(repo, args.node_bin, validation_decision["selected_validations"])
+        # --node-bin is optional: if omitted, run_validation() uses the
+        # inherited PATH as-is, which is correct on a clean machine or CI
+        # runner. Only pass --node-bin when the default `node` on PATH is
+        # broken or absent.
+        outcomes = run_validation(repo, args.node_bin, validation_decision["selected_validations"], args.npm_install)
 
     recommendation = final_recommendation(risk, outcomes, validation_decision)
 
@@ -951,6 +994,7 @@ def main():
 
     audit_record = {
         "repo": repo, "base_ref": args.against, "repo_head": change["repo_head"],
+        "tool_version": TOOL_VERSION,
         "policy_version": POLICY_VERSION,
         "changed_files": change["changed_files"],
         "impact": impact, "risk": risk, "validation_decision": validation_decision,

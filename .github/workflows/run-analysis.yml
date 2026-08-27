@@ -1,0 +1,100 @@
+name: Run Analysis (Pilot)
+
+# Runs the vertical-slice analyzer against ANOTHER team's repository and
+# change, on demand, via manual inputs -- no command line, no local setup,
+# no need to understand design8/design9.
+#
+# HARD CONSTRAINTS (do not remove or work around these):
+#   - The target repository is checked out READ-ONLY. This workflow never
+#     commits, pushes, merges, or otherwise writes to it.
+#   - This workflow executes the target repository's own install/test
+#     scripts (npm install / npm test) to run the validation the analyzer
+#     selects. Only run this against repositories your organization
+#     already trusts to run in CI -- exactly the same trust you already
+#     extend to that repository's own pipeline.
+#   - No credentials are stored in this repository or this file. Private
+#     target repositories require a repository secret named
+#     TARGET_REPO_TOKEN (see slice/PILOT.md for the exact scopes needed).
+#     Public repositories need no token at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repository, as owner/repo (e.g. team-a/payment-service)"
+        required: true
+        type: string
+      target_ref:
+        description: "The change to analyze: a branch name, or a PR ref (refs/pull/123/head)"
+        required: true
+        type: string
+      base_ref:
+        description: "Branch to diff against (what target_ref is being proposed on top of)"
+        required: false
+        type: string
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ImpactTestAI (the analyzer)
+        uses: actions/checkout@v4
+
+      - name: Checkout target repository (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.target_ref }}
+          token: ${{ secrets.TARGET_REPO_TOKEN || github.token }}
+          path: target-repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch base ref for diffing
+        working-directory: target-repo
+        run: git fetch origin "${{ inputs.base_ref }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run analysis
+        run: |
+          mkdir -p slice/reports
+          SAFE_NAME=$(echo "${{ inputs.target_repo }}" | tr '/' '-')
+          python3 slice/analyze_change.py "$GITHUB_WORKSPACE/target-repo" \
+            --against "origin/${{ inputs.base_ref }}" \
+            --github-repo "${{ inputs.target_repo }}" \
+            --npm-install \
+            --out "slice/reports/pilot-${SAFE_NAME}-report.md"
+          echo "REPORT_STEM=pilot-${SAFE_NAME}-report" >> "$GITHUB_ENV"
+
+      - name: Verify expected artifacts were produced
+        run: |
+          test -s "slice/reports/${REPORT_STEM}.md"
+          test -s "slice/reports/${REPORT_STEM}.audit.json"
+          python3 -c "import json; json.load(open('slice/reports/${REPORT_STEM}.audit.json'))"
+
+      - name: Publish report summary
+        if: always()
+        run: cat "slice/reports/${REPORT_STEM}.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report and audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.REPORT_STEM }}
+          path: |
+            slice/reports/${{ env.REPORT_STEM }}.md
+            slice/reports/${{ env.REPORT_STEM }}.audit.json
+          retention-days: 30

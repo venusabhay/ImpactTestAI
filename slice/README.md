@@ -1,6 +1,8 @@
 # Vertical Slice — First Implementation Milestone
 
-**Current status: Stage 2B officially accepted and frozen.** The project is paused here, by business decision, before any Stage 3 (production evidence) work. See the status banner at the top of [`reports/vertical-slice-package.md`](reports/vertical-slice-package.md) for the full acceptance record, verification evidence, and confirmed business decisions.
+> **Just want to run this against your own repository?** Go to [`PILOT.md`](PILOT.md) — a short, non-technical guide. Everything below is engineering/history detail, not required reading for pilot users.
+
+**Current status: Stage 2B officially accepted and frozen; now in internal pilot.** Engineering has packaged this milestone for other teams to run against their own repositories (see [`PILOT.md`](PILOT.md) and `.github/workflows/run-analysis.yml`) while the business owner collects feedback. No architecture changes, no decision-semantics changes, and no Stage 3 (production evidence) work are part of this packaging effort — see the status banner at the top of [`reports/vertical-slice-package.md`](reports/vertical-slice-package.md) for the full Stage 2B acceptance record, verification evidence, and confirmed business decisions.
 
 This is the first real implementation of the design8/design9 decision chain, scoped exactly as directed.
 
@@ -39,17 +41,22 @@ Produce an explainable decision
 
 Target repository: [social-media-mini](https://github.com/venusabhay/social-media-mini), cloned locally to `/Users/abhay/git-venusabhay/social-media-mini` (the canonical local location for this repo) — nothing was pushed back to it. A real, plausible code change was made to `services/auth-service/server.js`: the `/verify` endpoint (called by `post-service` and `user-service` on every authenticated request) was given a 5-second in-memory cache to reduce database load. This is exactly the kind of change the design was built to reason about: small, and touching a structurally central, security-adjacent path.
 
-## How to reproduce
+## How to reproduce (engineer, local CLI)
+
+For running the analyzer yourself rather than through the pilot workflow (see `PILOT.md` for that):
 
 ```bash
 python3 analyze_change.py <path-to-repo> \
   --against HEAD \
-  --node-bin <directory containing a working node/npm> \
-  --github-repo <owner/repo>   # optional, Stage 2: adds real CI run history
+  --github-repo <owner/repo>    # optional, Stage 2: adds real CI run history
+  --npm-install                 # optional: run `npm install` before validation (needed on a fresh checkout)
+  --node-bin <directory>        # optional: only needed if the default `node` on PATH is broken/missing
   --out reports/some-report.md
 ```
 
-The tool only reads the target repository (and, with `--github-repo`, this repository's public GitHub Actions run history) and runs its own existing `npm test` — it never modifies, commits, or pushes anything anywhere.
+Run `python3 analyze_change.py --version` to see the exact tool and policy version. Unit tests live in `tests/` (`python3 -m pytest tests/`); the CI fixture used to smoke-test the whole pipeline is in `fixtures/` (`bash fixtures/setup_fixture.sh`).
+
+The tool only reads the target repository (and, with `--github-repo`, that repository's GitHub Actions run history) and runs its own existing `npm test` — it never modifies, commits, or pushes anything anywhere.
 
 ## Stage 2 — adding one operational data source (CI/test-run history)
 

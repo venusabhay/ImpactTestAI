@@ -1,6 +1,6 @@
 # Change Risk & Validation Report
 
-*Generated 2026-08-27T08:58:46.134882+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
+*Generated 2026-08-27T09:29:26.836056+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
 
 ## CHANGE
 
@@ -31,12 +31,12 @@ services/auth-service/server.js | 15 +++++++++++++--
 - [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:11 references "/verify".
 - [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:13 references "/verify".
 - [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:16 references "/verify".
-- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:62 references "/verify".
-- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:72 references "/verify".
 - [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:73 references "/verify".
-- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:88 references "/verify".
-- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:105 references "/verify".
-- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:115 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:83 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:84 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:99 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:116 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:126 references "/verify".
 - [STATIC_ANALYSIS] services/auth-service/verify-cross-service.integration.test.js spawns a real, separate process running the changed module and drives it over real HTTP (via axios), rather than an in-process or mocked app -- this is direct evidence the changed behavior can be, and is, exercised as dependent services actually call it.
 
 ## RISK
@@ -84,29 +84,29 @@ The changed endpoint is called by 2 other service(s): post-service, user-service
 > auth-service@1.0.0 test
 > node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit
 
-(node:32273) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(node:33153) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-FAIL ./verify-cross-service.integration.test.js (13.096 s)
+FAIL ./verify-cross-service.integration.test.js (14.407 s)
   ● Cross-service: /verify as actually called by dependent services › SECURITY REGRESSION CHECK: a deleted user must not remain authorized via the verification cache
 
-    SECURITY REGRESSION: /verify returned status 200 with body {"user":{"_id":"6a8ffc3f7e8342cac290cb68","firstName":"Soon","lastName":"Deleted","email":"crosssvc-deleted-1787821118928@example.com","bio":"","profilePic":"","createdAt":"2026-08-27T08:58:39.053Z","__v":0}} for a token belonging to a user deleted moments earlier. The 5-second verification cache introduced in this change authorized a request that should have been rejected -- exactly the caching/staleness risk the vertical-slice risk assessment flagged for this change.
+    SECURITY REGRESSION: /verify returned status 200 with body {"user":{"_id":"6a90036e4c62713098ca62cf","firstName":"Soon","lastName":"Deleted","email":"crosssvc-deleted-1787822958506@example.com","bio":"","profilePic":"","createdAt":"2026-08-27T09:29:18.683Z","__v":0}} for a token belonging to a user deleted moments earlier. The 5-second verification cache introduced in this change authorized a request that should have been rejected -- exactly the caching/staleness risk the vertical-slice risk assessment flagged for this change.
 
-      112 |
-      113 |     if (secondVerifyStatus !== 401) {
-    > 114 |       throw new Error(
+      123 |
+      124 |     if (secondVerifyStatus !== 401) {
+    > 125 |       throw new Error(
           |             ^
-      115 |         `SECURITY REGRESSION: /verify returned status ${secondVerifyStatus} with body ` +
-      116 |         `${JSON.stringify(secondVerifyBody)} for a token belonging to a user deleted moments ` +
-      117 |         `earlier. The 5-second verification cache introduced in this change authorized a ` +
+      126 |         `SECURITY REGRESSION: /verify returned status ${secondVerifyStatus} with body ` +
+      127 |         `${JSON.stringify(secondVerifyBody)} for a token belonging to a user deleted moments ` +
+      128 |         `earlier. The 5-second verification cache introduced in this change authorized a ` +
 
-      at Object.<anonymous> (verify-cross-service.integration.test.js:114:13)
+      at Object.<anonymous> (verify-cross-service.integration.test.js:125:13)
 
-PASS ./auth.test.js (6.268 s)
+PASS ./auth.test.js (7.248 s)
 
 Test Suites: 1 failed, 1 passed, 2 total
 Tests:       1 failed, 13 passed, 14 total
 Snapshots:   0 total
-Time:        19.902 s
+Time:        22.119 s
 Ran all test suites.
 ```
 </details>
@@ -123,4 +123,4 @@ At least one selected validation failed. Do not proceed without human review.
 - Production call volume / exposure for POST /verify: Unknown / insufficient evidence (no production telemetry access in this slice).
 
 ---
-*Risk/validation rules: `repo-plus-ci-plus-cross-service-v4`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*
+*Tool version: `0.2.0-pilot`. Risk/validation rules: `repo-plus-ci-plus-cross-service-v4`. Re-running this analysis with the same tool and policy version against the same repo state and ref should reproduce this exact assessment.*
