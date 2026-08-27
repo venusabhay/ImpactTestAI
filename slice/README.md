@@ -1,12 +1,14 @@
 # Vertical Slice — First Implementation Milestone
 
+**Current status: Stage 2B officially accepted and frozen.** The project is paused here, by business decision, before any Stage 3 (production evidence) work. See the status banner at the top of [`reports/vertical-slice-package.md`](reports/vertical-slice-package.md) for the full acceptance record, verification evidence, and confirmed business decisions.
+
 This is the first real implementation of the design8/design9 decision chain, scoped exactly as directed.
 
 **Stage 1 (frozen):** one repository, no production/incident/organizational access, one real change, taken all the way through to a validated, explainable decision.
 
 **Stage 2 (accepted):** the same chain, with exactly one real operational data source added — this repository's actual GitHub Actions run history — kept strictly as additive evidence, never as an input to probability or the recommendation algorithm. See "Stage 2" below.
 
-**Stage 2B:** closes the specific capability gap Stage 1 identified and Stage 2 declined to paper over — a real cross-service integration test that actually exercises the changed `/verify` behavior the way `post-service`/`user-service` depend on it. Result: **it found a real regression.** See "Stage 2B" below.
+**Stage 2B (officially accepted — the current frozen milestone):** closes the specific capability gap Stage 1 identified and Stage 2 declined to paper over — a real cross-service integration test that actually exercises the changed `/verify` behavior the way `post-service`/`user-service` depend on it. Result: **it found a real regression**, verified to be genuinely caused by the change (not pre-existing, not a test artifact, reproducible 3/3 runs). See "Stage 2B" below and the acceptance banner in the package doc.
 
 ```
 Repository / PR

@@ -1,5 +1,26 @@
 # Vertical Slice — First Milestone Package
 
+> ## STATUS: Stage 2B — Officially Accepted (frozen, no further work pending Stage 3 decision)
+>
+> **Milestone statement:** the vertical slice successfully identified a validation gap, selected a validation that exercised the real affected behavior, and uncovered a genuine authorization regression introduced by the change. The system correctly escalated the failed validation rather than allowing the change to proceed.
+>
+> **Verified, not merely asserted, before acceptance:**
+> - Original code (no caching change): the security test **passes**.
+> - Caching change present: the security test **fails**.
+> - Repeated execution: **3/3 failures**, consistent timing — not a flake.
+> - The real, unmodified `server.js` is exercised — no test-conditional code exists in it.
+> - Real HTTP interaction — the exact call shape dependent services use, not an in-process mock.
+> - The existing (pre-Stage-2B) test suite **passed** while missing the regression entirely.
+> - The decision engine **automatically** changed its recommendation to `ESCALATE` — no rule was written to force this outcome.
+>
+> **Business decisions confirmed by the business owner:**
+> 1. `ESCALATE` is the correct response when a selected validation fails on a potentially serious regression: do not auto-approve; hand off to a human for investigation/remediation. Automatic PR blocking, rollback, or remediation are explicitly out of scope for this MVP.
+> 2. Leaving the defect unfixed in the experiment artifact is acceptable, because fixing it would destroy the evidence this milestone exists to demonstrate. **This defect is an intentionally retained demonstration defect — it is not an approved production change, it has not been committed or pushed anywhere, and it must not be merged, deployed, or otherwise treated as real.** It is labelled as such directly in the test file (`services/auth-service/verify-cross-service.integration.test.js`).
+>
+> **Next question, deliberately not yet asked:** not "can we build this?" — that's answered. It's "is this behavior valuable enough to justify turning this experiment into a product?" No Stage 3 (production evidence), no design8/design9 changes, and no new design document are planned until that question is answered.
+
+---
+
 **Target:** [social-media-mini](https://github.com/venusabhay/social-media-mini) (real repository, cloned locally to `/Users/abhay/git-venusabhay/social-media-mini`; nothing pushed back to it)
 **Change analyzed:** a real code change made to `services/auth-service/server.js` — the `/verify` endpoint (called by both `post-service` and `user-service` on every authenticated request) was modified to add a 5-second in-memory cache of verification results, to reduce database load. This is a realistic, plausible engineering change with genuine correctness risk (a cached "valid" result could briefly outlive a token that should no longer be valid).
 **Repository access used:** source code, tests, package/dependency manifests, CI workflow definitions, commit history. No production telemetry, incident history, or business documentation was available or used.
