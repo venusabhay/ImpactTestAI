@@ -1,6 +1,6 @@
 # Change Risk & Validation Report
 
-*Generated 2026-08-27T08:11:21.690887+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
+*Generated 2026-08-27T08:32:34.125775+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
 
 ## CHANGE
 
@@ -31,13 +31,19 @@ services/auth-service/server.js | 15 +++++++++++++--
 
 ## RISK
 
-**HIGH**  (business impact: HIGH, probability: HIGH, exposure: HIGH)
+**HIGH**  (business impact: HIGH, exposure: HIGH)
 
-Confidence: **LOW** (impact: HIGH, probability: MEDIUM, evidence: LOW)
+Probability: **UNKNOWN** -- Not estimated: no historical outcome data is available in this slice to calibrate a failure probability against. The risk indicators below are evidence that certain risk factors are present -- they are not a measurement of how likely a failure is.
+
+Confidence: **LOW** (impact: HIGH, probability: LOW, evidence: LOW)
+
+Risk indicators observed (factors present -- not a probability):
+- introduces new in-memory state
+- introduces or touches caching (statefulness / staleness risk)
 
 ## WHY
 
-The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff itself contains patterns associated with elevated regression risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). The relevant existing test file does not import the changed module -- it duplicates the route logic instead, so passing tests are a weak, indirect signal at best. Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
+The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff contains factors associated with elevated risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). These are indicators the risk level accounts for, not a measured probability of failure. The relevant existing test file does not import the changed module -- it duplicates the route logic instead, so passing tests are a weak, indirect signal at best. Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
 
 ## RECOMMENDED VALIDATION
 
@@ -56,29 +62,29 @@ The changed endpoint is called by 2 other service(s): post-service, user-service
 > auth-service@1.0.0 test
 > node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit
 
-(node:28849) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(node:31109) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-PASS ./auth.test.js (16.494 s)
+PASS ./auth.test.js (14.513 s)
   Auth Service - POST /register
-    ✓ should register a new user successfully (536 ms)
-    ✓ should not register user with existing email (264 ms)
-    ✓ should not register user without required fields (31 ms)
+    ✓ should register a new user successfully (693 ms)
+    ✓ should not register user with existing email (217 ms)
+    ✓ should not register user without required fields (23 ms)
     ✓ should validate email format (20 ms)
   Auth Service - POST /login
-    ✓ should login user with correct credentials (358 ms)
-    ✓ should not login with incorrect password (325 ms)
-    ✓ should not login with non-existent email (198 ms)
-    ✓ should not login without email (275 ms)
-    ✓ should not login without password (354 ms)
+    ✓ should login user with correct credentials (374 ms)
+    ✓ should not login with incorrect password (317 ms)
+    ✓ should not login with non-existent email (193 ms)
+    ✓ should not login without email (199 ms)
+    ✓ should not login without password (223 ms)
   Auth Service - POST /verify
-    ✓ should verify valid token (383 ms)
-    ✓ should reject request without token (344 ms)
-    ✓ should reject invalid token (422 ms)
+    ✓ should verify valid token (353 ms)
+    ✓ should reject request without token (321 ms)
+    ✓ should reject invalid token (333 ms)
 
 Test Suites: 1 passed, 1 total
 Tests:       12 passed, 12 total
 Snapshots:   0 total
-Time:        16.784 s
+Time:        14.823 s, estimated 17 s
 Ran all test suites.
 ```
 </details>
@@ -93,3 +99,6 @@ Risk is HIGH and the only available automated validation does not directly exerc
 
 - Historical incident rate for this endpoint: Unknown / insufficient evidence (no incident-system access in this slice).
 - Production call volume / exposure for POST /verify: Unknown / insufficient evidence (no production telemetry access in this slice).
+
+---
+*Risk/validation rules: `repo-evidence-rules-v2`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*

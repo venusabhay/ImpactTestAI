@@ -14,7 +14,7 @@ See [verify-cache-change-report.md](verify-cache-change-report.md) for the full 
 | --- | --- |
 | What changed? | `auth-service`'s `POST /verify` endpoint |
 | What could be affected? | `auth-service` directly; `post-service` and `user-service` transitively (both call `/verify` on every authenticated request) |
-| Risk | **HIGH** (business impact: HIGH, probability: HIGH, exposure: HIGH) |
+| Risk | **HIGH** (business impact: HIGH, exposure: HIGH). Probability is reported as **UNKNOWN**, not estimated — see Limitations below. |
 | Confidence | **LOW** overall — impact confidence is HIGH (directly observed in code), but evidence confidence is LOW (see limitations below) |
 | Recommended validation | Run `auth-service`'s existing test suite (`npm test`) — the best available real validation, with an explicit caveat attached |
 | Did it run? | Yes — real execution, not simulated |
@@ -42,6 +42,7 @@ See [verify-cache-change-report.md](verify-cache-change-report.md) for the full 
 
 - **The test-suite gap described in B is repo-wide, not specific to this change.** None of the three backend services' test files import their own `server.js`. This vertical slice happened to surface it because it directly affects how much weight to put on "tests passed" for this particular change — but it's a pre-existing characteristic of the repository, not something introduced by the change under review.
 - **Risk levels (HIGH / MEDIUM / LOW) are qualitative buckets from explicit, inspectable rules** (how many services structurally depend on the changed endpoint; whether the route name matches security-sensitive vocabulary; whether the diff introduces new in-memory state or caching). They are not calibrated against historical outcomes, because none exist yet for this repository. This is intentional and disclosed, not an oversight — see §6 of the business vision document on what a repo-only first version can and cannot know.
+- **Probability is not estimated at all, on purpose** (policy version `repo-evidence-rules-v2`). An earlier version of this tool derived a `probability: HIGH/MEDIUM/LOW` bucket from the count of diff risk-indicators — that conflated "a risk factor is present" with "a failure is likely," which is exactly the kind of overclaiming this platform is meant to avoid. It was caught and corrected before this run: `probability` is now reported as `UNKNOWN` with an explicit reason, and the underlying indicators are listed by name instead. The risk/validation rule version is stamped on every report so this kind of change is always traceable to a specific policy version.
 - **No cross-service integration test exists** that would call the live, changed endpoint from `post-service` or `user-service`. The system recorded this as an explicitly rejected validation option with a stated reason, not a silent gap.
 - **Failure classification is manual.** If a validation had failed, this slice does not attempt to automatically distinguish a genuine regression from a flaky test or infrastructure issue — it flags failures as requiring human triage rather than guessing.
 

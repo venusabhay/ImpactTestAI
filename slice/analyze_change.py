@@ -15,16 +15,25 @@ silently substituted -- see slice/README.md for the full list):
     is surfaced directly, with a qualitative confidence bucket
     (HIGH / MEDIUM / LOW) assigned by an explicit, inspectable rule --
     never a numeric score presented as precise.
-  - RiskAssessment.probability / business_impact are qualitative buckets,
-    not fabricated percentages -- this repo has no historical outcome
-    data to calibrate a number against.
+  - RiskAssessment.business_impact / exposure are qualitative buckets
+    derived from structural facts (how many other services depend on the
+    changed endpoint, whether its name matches a sensitive pattern) --
+    these are legitimate structural observations, not predictions.
+  - RiskAssessment.probability is explicitly NOT estimated by this slice.
+    Risk indicators found in the diff (e.g. "introduces caching") are
+    evidence that a risk factor is present -- they are not evidence of
+    "the probability of failure is HIGH". Until there is historical
+    outcome data to calibrate against, probability is reported as
+    UNKNOWN / INSUFFICIENT EVIDENCE, and the indicators are surfaced
+    separately, by name, rather than folded into a probability bucket.
+    (Corrected in POLICY_VERSION 2 -- v1 conflated the two.)
   - "DecisionContext" is approximated by recording the repo path, git
-    ref, and tool version alongside the report -- sufficient to say what
-    the decision was based on, not a general-purpose reproducibility
-    service.
-  - RiskPolicy is a single hardcoded threshold function, not a
-    configurable object -- there is exactly one policy and one
-    organization in this slice.
+    ref, tool version, and POLICY_VERSION alongside the report --
+    sufficient to say what rules produced a given decision and to
+    reproduce it, not a general-purpose reproducibility service.
+  - RiskPolicy is a single hardcoded, versioned threshold function
+    (POLICY_VERSION below), not a configurable object -- there is
+    exactly one policy and one organization in this slice.
 
 This script only ever reads the target repository and runs its own
 existing `npm test`. It does not modify, commit, or push anything there.
@@ -36,6 +45,20 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+
+# Version of the rule-based risk/validation policy implemented below.
+# Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
+# or their thresholds change, so a given report/audit record always states
+# exactly which rules produced it -- the slice's stand-in for design8's
+# DecisionContext.policy_version until a real policy service exists.
+#   v1: probability was derived from a count of diff risk-pattern hits,
+#       presenting a heuristic indicator count as if it were a calibrated
+#       failure probability.
+#   v2: probability is no longer estimated at all in repo-only mode --
+#       reported as UNKNOWN / INSUFFICIENT EVIDENCE. Risk indicators are
+#       surfaced separately and by name; they inform risk_level but are
+#       never presented as a probability.
+POLICY_VERSION = "repo-evidence-rules-v2"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
@@ -325,40 +348,61 @@ def build_risk_assessment(change, impact):
     )
 
     pattern_hits = scan_risk_patterns(change["diff_text"])
-    distinct_reasons = sorted({h["reason"] for h in pattern_hits})
+    # Renamed from the v1 "distinct_reasons" -> risk_indicators: these are
+    # observed FACTORS present in the diff (e.g. "introduces caching"). They
+    # are evidence that a risk factor exists, not a measurement of failure
+    # probability -- v1's mistake was treating a count of these as if it
+    # were a calibrated probability. See POLICY_VERSION note at top of file.
+    risk_indicators = sorted({h["reason"] for h in pattern_hits})
 
     impact_score = structural_exposure_score + (1 if sensitive_name_hit else 0)
     business_impact = bucket_from_score(impact_score, thresholds=(1, 2, 4))
 
-    # Scored on the number of DISTINCT newly-introduced-risk patterns, not
-    # raw line-match count -- a pattern matching many lines (e.g. one new
-    # Map used everywhere) is one risk shape, not N of them.
-    probability_score = len(distinct_reasons)
-    probability = bucket_from_score(probability_score, thresholds=(1, 2, 4))
+    exposure = "HIGH" if structural_exposure_score >= 2 else ("MEDIUM" if structural_exposure_score == 1 else "LOW")
+
+    # PROBABILITY IS DELIBERATELY NOT ESTIMATED IN REPO-ONLY MODE.
+    # This slice has no historical outcome data to calibrate a failure
+    # probability against -- estimating one from indicator count alone
+    # would be presenting a heuristic as a measurement. Report it as an
+    # explicit unknown instead, per the business vision's principle that
+    # absence of evidence must never be presented as evidence of safety
+    # (or of danger, in the other direction).
+    probability = "UNKNOWN"
+    probability_reason = (
+        "Not estimated: no historical outcome data is available in this slice to calibrate a failure "
+        "probability against. The risk indicators below are evidence that certain risk factors are "
+        "present -- they are not a measurement of how likely a failure is."
+    )
 
     test_coverage_entities = [e for e in impact["affected_entities"] if e["impact_type"] == "TEST_COVERAGE"]
     direct_test_coverage = any(e["confidence"] == "MEDIUM" for e in test_coverage_entities)  # MEDIUM = imports module
 
     impact_confidence = "HIGH" if structural_exposure_score > 0 or changed_paths else "LOW"
-    probability_confidence = "MEDIUM" if pattern_hits else "LOW"
+    # Always LOW: there is no basis to be more confident than that about a
+    # dimension (probability) this policy version explicitly declines to estimate.
+    probability_confidence = "LOW"
     evidence_confidence = "MEDIUM" if direct_test_coverage else "LOW"
 
     confidences = [impact_confidence, probability_confidence, evidence_confidence]
     order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
     overall_confidence = min(confidences, key=lambda c: order[c])  # conservative: weakest link
 
-    exposure = "HIGH" if structural_exposure_score >= 2 else ("MEDIUM" if structural_exposure_score == 1 else "LOW")
-
-    # Max possible sum is 6 (CRITICAL+CRITICAL); require both dimensions to
-    # be at least HIGH before risk_level itself reaches CRITICAL.
+    # risk_level is now derived from business_impact + exposure + the
+    # number of distinct risk indicators observed -- structural facts and
+    # named indicators, never from the (unestimated) probability. Max
+    # possible sum is 9 (3+3+3); thresholds require broad agreement across
+    # all three dimensions before reaching CRITICAL.
+    indicator_level = bucket_from_score(len(risk_indicators), thresholds=(1, 2, 4))
+    dim_value = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
     risk_level = bucket_from_score(
-        {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}[business_impact]
-        + {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}[probability],
-        thresholds=(2, 4, 6),
+        dim_value[business_impact] + dim_value[exposure] + dim_value[indicator_level],
+        thresholds=(3, 5, 7),
     )
 
     return {
         "probability": probability,
+        "probability_reason": probability_reason,
+        "risk_indicators": risk_indicators,
         "business_impact": business_impact,
         "exposure": exposure,
         "risk_level": risk_level,
@@ -375,6 +419,7 @@ def build_risk_assessment(change, impact):
         "sensitive_name_hit": sensitive_name_hit,
         "risk_pattern_hits": pattern_hits,
         "direct_test_coverage": direct_test_coverage,
+        "policy_version": POLICY_VERSION,
     }
 
 
@@ -524,12 +569,17 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     lines.append("")
 
     lines.append("## RISK\n")
-    lines.append(f"**{risk['risk_level']}**  (business impact: {risk['business_impact']}, "
-                 f"probability: {risk['probability']}, exposure: {risk['exposure']})\n")
+    lines.append(f"**{risk['risk_level']}**  (business impact: {risk['business_impact']}, exposure: {risk['exposure']})\n")
+    lines.append(f"Probability: **{risk['probability']}** -- {risk['probability_reason']}\n")
     lines.append(f"Confidence: **{risk['confidence']['overall']}** "
                  f"(impact: {risk['confidence']['impact_confidence']}, "
                  f"probability: {risk['confidence']['probability_confidence']}, "
                  f"evidence: {risk['confidence']['evidence_confidence']})\n")
+    if risk["risk_indicators"]:
+        lines.append("Risk indicators observed (factors present -- not a probability):")
+        for ind in risk["risk_indicators"]:
+            lines.append(f"- {ind}")
+        lines.append("")
 
     lines.append("## WHY\n")
     why = []
@@ -538,9 +588,9 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
                     f"{', '.join(risk['structural_exposure']['caller_services'])}.")
     if risk["sensitive_name_hit"]:
         why.append("The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.).")
-    if risk["risk_pattern_hits"]:
-        reasons = sorted({h["reason"] for h in risk["risk_pattern_hits"]})
-        why.append("The diff itself contains patterns associated with elevated regression risk: " + "; ".join(reasons) + ".")
+    if risk["risk_indicators"]:
+        why.append("The diff contains factors associated with elevated risk: " + "; ".join(risk["risk_indicators"]) +
+                    ". These are indicators the risk level accounts for, not a measured probability of failure.")
     if not risk["direct_test_coverage"]:
         why.append("The relevant existing test file does not import the changed module -- it duplicates the route "
                     "logic instead, so passing tests are a weak, indirect signal at best.")
@@ -572,6 +622,10 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     for u in impact["uncertainty_sources"]:
         lines.append(f"- {u}")
     lines.append("")
+
+    lines.append(f"---\n*Risk/validation rules: `{risk['policy_version']}`. "
+                  f"Re-running this analysis with the same policy version against the same repo state and "
+                  f"ref should reproduce this exact assessment.*")
 
     return "\n".join(lines)
 
@@ -609,6 +663,7 @@ def main():
 
     audit_record = {
         "repo": repo, "base_ref": args.against, "repo_head": change["repo_head"],
+        "policy_version": POLICY_VERSION,
         "changed_files": change["changed_files"],
         "impact": impact, "risk": risk, "validation_decision": validation_decision,
         "outcomes": outcomes, "recommendation": {"decision": recommendation[0], "reason": recommendation[1]},
