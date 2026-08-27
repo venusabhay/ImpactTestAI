@@ -1,0 +1,48 @@
+{
+  "repo": "/Users/abhay/git-venusabhay/user-management-app",
+  "base_ref": "main",
+  "repo_head": "c32bf95d6832665cd2dd37b1c886abfaeba754c6",
+  "tool_version": "0.2.0-pilot",
+  "policy_version": "repo-plus-ci-plus-cross-service-v4",
+  "changed_files": [
+    "user-management-frontend/src/pages/Register.jsx"
+  ],
+  "impact": {
+    "affected_entities": [],
+    "uncertainty_sources": []
+  },
+  "risk": {
+    "probability": "UNKNOWN",
+    "probability_reason": "Not estimated: no historical outcome data is available in this slice to calibrate a failure probability against. The risk indicators below are evidence that certain risk factors are present -- they are not a measurement of how likely a failure is.",
+    "risk_indicators": [],
+    "business_impact": "LOW",
+    "exposure": "LOW",
+    "risk_level": "LOW",
+    "confidence": {
+      "impact_confidence": "LOW",
+      "probability_confidence": "LOW",
+      "evidence_confidence": "LOW",
+      "overall": "LOW"
+    },
+    "structural_exposure": {
+      "caller_services": [],
+      "score": 0
+    },
+    "sensitive_name_hit": false,
+    "risk_pattern_hits": [],
+    "direct_test_coverage": false,
+    "has_cross_service_validation": false,
+    "policy_version": "repo-plus-ci-plus-cross-service-v4"
+  },
+  "validation_decision": {
+    "selected_validations": [],
+    "rejected_validations": []
+  },
+  "ci_history": {},
+  "outcomes": [],
+  "recommendation": {
+    "decision": "ESCALATE",
+    "reason": "Validation could not be completed (infrastructure/timeout or none available). Escalate for human review."
+  },
+  "generated_at": "2026-08-27T15:39:44.932818+00:00"
+}
