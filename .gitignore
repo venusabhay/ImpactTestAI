@@ -7,3 +7,11 @@ __pycache__/
 # demonstration record in slice/reports/.
 slice/reports/pilot-*.md
 slice/reports/pilot-*.audit.json
+
+# Artifact History: every execution's immutable report.md/audit.json/
+# metadata.json, under artifacts/<organization>/<repository>/<run_id>/.
+# Preserved via GitHub Actions' own artifact storage (see
+# .github/workflows/run-analysis.yml), not by committing to this repo --
+# keeps ad-hoc/local/CI runs from accumulating as repo bloat.
+artifacts/
+slice/artifacts/

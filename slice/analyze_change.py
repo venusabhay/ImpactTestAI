@@ -56,6 +56,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+import artifact_history
 import discovery
 
 # Version of this script itself (the code/mechanics), distinct from
@@ -955,7 +956,8 @@ def final_recommendation(risk, outcomes, validation_decision):
 # Report rendering
 # ---------------------------------------------------------------------------
 
-def render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo, node_bin_dir, ci_history=None):
+def render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo, node_bin_dir, ci_history=None,
+                   run_id=None):
     decision, decision_reason = recommendation
     direct = [e for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
     transitive = [e for e in impact["affected_entities"] if e["impact_type"] == "TRANSITIVE"]
@@ -1075,7 +1077,8 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
         lines.append(f"- {u}")
     lines.append("")
 
-    lines.append(f"---\n*Tool version: `{TOOL_VERSION}`. Risk/validation rules: `{risk['policy_version']}`. "
+    run_id_clause = f"Run ID: `{run_id}`. " if run_id else ""
+    lines.append(f"---\n*{run_id_clause}Tool version: `{TOOL_VERSION}`. Risk/validation rules: `{risk['policy_version']}`. "
                   f"Re-running this analysis with the same tool and policy version against the same repo "
                   f"state and ref should reproduce this exact assessment.*")
 
@@ -1098,7 +1101,17 @@ def main():
     parser.add_argument("--npm-install", action="store_true",
                          help="Run 'npm install' before each selected validation (for a fresh checkout, e.g. in CI). "
                               "Off by default to preserve prior Stage 1/2/2B behavior exactly.")
+    parser.add_argument("--artifacts-root", default="artifacts",
+                         help="Root directory under which every execution's immutable "
+                              "<organization>/<repository>/<run_id>/{report.md,audit.json,metadata.json} "
+                              "is preserved (Artifact History milestone). Defaults to 'artifacts', relative "
+                              "to the current working directory.")
     args = parser.parse_args()
+
+    # Captured before any work begins, for metadata.json's started_at --
+    # see slice/ARTIFACT_HISTORY_DESIGN.md.
+    started_at = datetime.now(timezone.utc).isoformat()
+    run_id = artifact_history.generate_run_id()
 
     repo = os.path.abspath(args.repo)
     change = get_change(repo, args.against)
@@ -1134,7 +1147,9 @@ def main():
     recommendation = final_recommendation(risk, outcomes, validation_decision)
 
     report = render_report(change, impact, risk, validation_decision, outcomes, recommendation, repo,
-                            args.node_bin, ci_history)
+                            args.node_bin, ci_history, run_id=run_id)
+
+    completed_at = datetime.now(timezone.utc).isoformat()
 
     audit_record = {
         "repo": repo, "base_ref": args.against, "repo_head": change["repo_head"],
@@ -1145,7 +1160,7 @@ def main():
         "impact": impact, "risk": risk, "validation_decision": validation_decision,
         "ci_history": ci_history,
         "outcomes": outcomes, "recommendation": {"decision": recommendation[0], "reason": recommendation[1]},
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": completed_at,
     }
 
     out_path = args.out or "report.md"
@@ -1154,8 +1169,35 @@ def main():
     with open(out_path.replace(".md", ".audit.json"), "w") as f:
         json.dump(audit_record, f, indent=2)
 
+    # Artifact History milestone: every execution ALSO gets an immutable,
+    # independently traceable historical record -- never overwritten, never
+    # deduplicated even for identical inputs. See
+    # slice/ARTIFACT_HISTORY_DESIGN.md. Separate from --out (which remains
+    # exactly as before, for direct/ad-hoc use) so existing callers are
+    # unaffected.
+    organization, repository, repository_url = artifact_history.resolve_identity(repo, args.github_repo)
+    base_sha = artifact_history.resolve_sha(repo, args.against)
+    metadata = {
+        "run_id": run_id,
+        "organization": organization,
+        "repository": repository,
+        "repository_url": repository_url,
+        "head_sha": change["repo_head"],
+        "base_sha": base_sha,
+        "tool_version": TOOL_VERSION,
+        "policy_version": POLICY_VERSION,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "decision": recommendation[0],
+        "risk_level": risk["risk_level"],
+    }
+    run_dir = artifact_history.write_run_artifacts(
+        args.artifacts_root, organization, repository, run_id, report, audit_record, metadata,
+    )
+
     print(report)
     print(f"\n\n[written to {out_path} and {out_path.replace('.md', '.audit.json')}]", file=sys.stderr)
+    print(f"[run {run_id} preserved at {run_dir}]", file=sys.stderr)
 
 
 if __name__ == "__main__":

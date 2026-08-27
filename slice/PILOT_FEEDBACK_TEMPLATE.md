@@ -6,11 +6,11 @@ Please fill this out after running the pilot against a handful of your team's re
 
 Fill in one row per run of the pilot (or one row summarizing your team's overall experience, whichever is easier).
 
-| Change tested (PR/branch) | Useful finding? | Unnecessary recommendation? | Missed issue? | Would use again? |
-| --- | --- | --- | --- | --- |
-| | | | | |
-| | | | | |
-| | | | | |
+| Run ID (from the report/artifact — see PILOT.md) | Change tested (PR/branch) | Useful finding? | Unnecessary recommendation? | Missed issue? | Would use again? |
+| --- | --- | --- | --- | --- | --- |
+| | | | | | |
+| | | | | | |
+| | | | | | |
 
 **Rollup for your team** (fill in after the table above):
 
