@@ -64,7 +64,7 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.3.0-pilot"
+TOOL_VERSION = "0.4.0-pilot"
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -110,7 +110,14 @@ TOOL_VERSION = "0.3.0-pilot"
 #       No change to probability handling (still UNKNOWN), risk_level
 #       thresholds, or the ESCALATE/REQUIRE_ADDITIONAL_VALIDATION/ACCEPT
 #       rules in final_recommendation().
-POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v5"
+#   v6 (ADAPT_ARCHITECTURE_DISCOVERY, held-out finding): extends source-file
+#       scanning to .ts/.tsx (discovery.SOURCE_EXTENSIONS), previously
+#       silently limited to .js/.jsx -- an inherited gap from the original
+#       JS-only prototype, found by held-out testing against a real
+#       TypeScript repository, not a deliberate scope decision. Same
+#       route/export/import regexes, applied to a broader file set; no
+#       change to any formula, threshold, or decision rule.
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-plus-discovery-v6"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
@@ -223,11 +230,14 @@ def find_callers(repo, route_path, own_file, components):
     return callers
 
 
+TEST_FILE_SUFFIXES = tuple(f".test{ext}" for ext in discovery.SOURCE_EXTENSIONS)
+
+
 def find_test_evidence(repo, route_path):
     if len(route_path.strip("/")) == 0:
         return []
     hits = grep_repo(repo, route_path)
-    return [h for h in hits if h["file"].endswith(".test.js")]
+    return [h for h in hits if h["file"].endswith(TEST_FILE_SUFFIXES)]
 
 
 def test_file_is_real_cross_service(repo, test_file):
@@ -260,7 +270,7 @@ def test_file_imports_module(repo, test_file, module_basename):
     # produced false negatives (reported "does not import" for a test file
     # that plainly does) -- caught by tests/test_analyze_change.py.
     return bool(re.search(rf"""(from|require)\s*\(?['"]\.?/?{re.escape(module_basename)}['"]""", text)) \
-        or bool(re.search(rf"""(from|require)\s*\(?['"]\./{re.escape(module_basename.replace('.js',''))}['"]""", text))
+        or bool(re.search(rf"""(from|require)\s*\(?['"]\./{re.escape(discovery.strip_source_extension(module_basename))}['"]""", text))
 
 
 def _impact_for_route(repo, components, route, defining_path, defining_service,
@@ -358,7 +368,7 @@ def build_impact_assessment(repo, change, components):
 
     for path in change["changed_files"]:
         full_path = os.path.join(repo, path)
-        if not os.path.exists(full_path) or not (path.endswith(".js") or path.endswith(".jsx")):
+        if not os.path.exists(full_path) or not discovery.is_source_file(path):
             continue
         with open(full_path, "r", errors="ignore") as f:
             file_text = f.read()

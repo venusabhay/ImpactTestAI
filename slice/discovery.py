@@ -23,6 +23,27 @@ import re
 
 EXCLUDE_DIRS = {"node_modules", ".git", "coverage", "dist", "build", ".pytest_cache", "__pycache__"}
 
+# Source file extensions this analyzer reads for route/middleware/export
+# discovery. Found via held-out testing (ai-agents, a real TypeScript
+# repository) that .ts/.tsx were silently never scanned -- an inherited gap
+# from the original JS-only prototype, not a deliberate scope decision.
+# The underlying route/export/import regexes are TS-syntax-compatible
+# (type annotations don't break `receiver.method(path, ...)` or
+# `export const x =` patterns), so extending the extension list is the
+# correct, general fix -- not a repository-specific accommodation.
+SOURCE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx")
+
+
+def is_source_file(filename):
+    return filename.endswith(SOURCE_EXTENSIONS)
+
+
+def strip_source_extension(filename):
+    for ext in SOURCE_EXTENSIONS:
+        if filename.endswith(ext):
+            return filename[: -len(ext)]
+    return filename
+
 ROUTE_CALL_RE = re.compile(r"\b(\w+)\.(get|post|put|delete|patch|all)\(\s*[\"'`](/[^\"'`]*)[\"'`]")
 
 HANDLER_START_RE = re.compile(r"(async\s*\(|\([^)]*\)\s*=>|function\s*\(|=>\s*\{)")
@@ -185,7 +206,7 @@ def find_middleware_usages(repo, changed_path, changed_text):
     for dirpath, dirnames, filenames in os.walk(repo):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         for fn in filenames:
-            if not (fn.endswith(".js") or fn.endswith(".jsx")):
+            if not is_source_file(fn):
                 continue
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, repo).replace("\\", "/")
@@ -196,7 +217,11 @@ def find_middleware_usages(repo, changed_path, changed_text):
                     text = f.read()
             except OSError:
                 continue
-            if not re.search(rf"""(from|require)\s*\(?['"][^'"]*{re.escape(changed_stub)}(\.js)?['"]""", text):
+            # Optional extension suffix generalized to any known source
+            # extension (or none -- import specifiers commonly omit it,
+            # e.g. `from "../middleware/authMiddleware"`), not just .js.
+            ext_group = "|".join(re.escape(e) for e in SOURCE_EXTENSIONS)
+            if not re.search(rf"""(from|require)\s*\(?['"][^'"]*{re.escape(changed_stub)}({ext_group})?['"]""", text):
                 continue
             for reg in find_route_registrations(text):
                 used = exported & set(reg["middleware_args"])

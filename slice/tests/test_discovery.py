@@ -192,3 +192,63 @@ def test_no_usage_found_when_not_imported(tmp_path):
 def test_no_usage_when_file_exports_nothing():
     usages = discovery.find_middleware_usages("/nonexistent", "x.js", "const x = 1;\n")
     assert usages == []
+
+
+# ---------------------------------------------------------------------------
+# TypeScript support (.ts/.tsx) -- found missing via held-out testing against
+# a real TypeScript repository (ai-agents). Not a repository-specific fix:
+# the same regexes, applied to a broader, generically-defined file-extension
+# set (SOURCE_EXTENSIONS), covering any .ts/.tsx file in any repository.
+# ---------------------------------------------------------------------------
+
+def test_is_source_file_includes_ts_and_tsx():
+    assert discovery.is_source_file("server.ts") is True
+    assert discovery.is_source_file("Component.tsx") is True
+    assert discovery.is_source_file("server.js") is True
+    assert discovery.is_source_file("readme.md") is False
+
+
+def test_strip_source_extension_handles_all_known_extensions():
+    assert discovery.strip_source_extension("server.ts") == "server"
+    assert discovery.strip_source_extension("Component.tsx") == "Component"
+    assert discovery.strip_source_extension("server.js") == "server"
+    assert discovery.strip_source_extension("noext") == "noext"
+
+
+def test_component_discovery_finds_typescript_component(tmp_path):
+    _write(tmp_path / "ts-service/package.json", '{"name": "ts-service"}')
+    _write(
+        tmp_path / "ts-service/server.ts",
+        "import express from 'express';\n"
+        "const app = express();\n"
+        'app.post("/verify", async (req: Request, res: Response) => {\n  res.json({});\n});\n',
+    )
+    components = discovery.find_components(str(tmp_path))
+    assert {"ts-service"} <= {c["name"] for c in components}
+
+
+def test_route_registration_found_in_typescript_file_with_type_annotations():
+    """Type annotations must not break the route-call regex -- it matches on
+    the receiver.method(path, ...) shape, which TypeScript's syntax for this
+    is a strict superset of."""
+    src = 'router.post("/verify", async (req: Request, res: Response): Promise<void> => {\n  res.json({});\n});\n'
+    regs = discovery.find_route_registrations(src)
+    assert len(regs) == 1
+    assert regs[0]["path"] == "/verify"
+
+
+def test_middleware_usage_discovered_across_typescript_files(tmp_path):
+    middleware_path = "middleware/auth.ts"
+    _write(tmp_path / middleware_path,
+           "export const protect = async (req: Request, res: Response, next: NextFunction): Promise<void> => {};\n")
+    _write(
+        tmp_path / "routes/userRoutes.tsx",
+        'import { protect } from "../middleware/auth";\n'
+        'router.get("/profile", protect, async (req: Request, res: Response) => {\n  res.json(req.user);\n});\n',
+    )
+    with open(tmp_path / middleware_path) as f:
+        changed_text = f.read()
+
+    usages = discovery.find_middleware_usages(str(tmp_path), middleware_path, changed_text)
+    assert len(usages) == 1
+    assert usages[0]["file"] == "routes/userRoutes.tsx"
