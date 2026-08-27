@@ -2,7 +2,7 @@
   "repo": "/Users/abhay/git-venusabhay/social-media-mini",
   "base_ref": "HEAD",
   "repo_head": "b6fd0644e0929e514357a30d7c082c433530916e",
-  "policy_version": "repo-plus-ci-history-v3",
+  "policy_version": "repo-plus-ci-plus-cross-service-v4",
   "changed_files": [
     "services/auth-service/server.js"
   ],
@@ -71,6 +71,53 @@
             "description": "services/auth-service/auth.test.js does NOT import or require server.js -- it appears to re-implement its own test version of the route(s) instead. A passing result here does not confirm the actual changed code path was exercised."
           }
         ]
+      },
+      {
+        "entity": "Real cross-service validation: services/auth-service/verify-cross-service.integration.test.js",
+        "impact_type": "CROSS_SERVICE_VALIDATION",
+        "confidence": "HIGH",
+        "evidence": [
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:11 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:13 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:16 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:62 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:72 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:73 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:88 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:105 references \"/verify\"."
+          },
+          {
+            "type": "TEST_EXECUTION",
+            "description": "services/auth-service/verify-cross-service.integration.test.js:115 references \"/verify\"."
+          },
+          {
+            "type": "STATIC_ANALYSIS",
+            "description": "services/auth-service/verify-cross-service.integration.test.js spawns a real, separate process running the changed module and drives it over real HTTP (via axios), rather than an in-process or mocked app -- this is direct evidence the changed behavior can be, and is, exercised as dependent services actually call it."
+          }
+        ]
       }
     ],
     "uncertainty_sources": [
@@ -91,7 +138,7 @@
     "confidence": {
       "impact_confidence": "HIGH",
       "probability_confidence": "LOW",
-      "evidence_confidence": "LOW",
+      "evidence_confidence": "HIGH",
       "overall": "LOW"
     },
     "structural_exposure": {
@@ -112,8 +159,9 @@
         "reason": "introduces new in-memory state"
       }
     ],
-    "direct_test_coverage": false,
-    "policy_version": "repo-plus-ci-history-v3"
+    "direct_test_coverage": true,
+    "has_cross_service_validation": true,
+    "policy_version": "repo-plus-ci-plus-cross-service-v4"
   },
   "validation_decision": {
     "selected_validations": [
@@ -121,16 +169,16 @@
         "type": "INTEGRATION_TEST",
         "target": "auth-service",
         "command": "npm test",
-        "decision_reason": "'auth-service' service's existing test suite is the best available real validation for this change (exists, runs via 'npm test'). NOTE: repo-evidence indicates this suite does not import the changed module directly (it re-implements its own routes for testing) -- treat a PASS here as a weak signal, not confirmation that the changed code path was exercised."
-      }
-    ],
-    "rejected_validations": [
+        "decision_reason": "'auth-service' service's existing test suite is the best available real validation for this change (exists, runs via 'npm test'). This service's test run ALSO includes a real cross-service integration test (spawns the actual service as a live process, driven over real HTTP) -- see the E2E_TEST entry below."
+      },
       {
         "type": "E2E_TEST",
         "target": "post-service, user-service",
-        "decision_reason": "A cross-service integration test that actually calls the live, changed endpoint from post-service, user-service would directly validate the structural risk identified above, but no such test exists in this repository. This is a capability gap, not a validation that was run and passed."
+        "command": "(covered by the INTEGRATION_TEST run above)",
+        "decision_reason": "A real cross-service integration test exists that spawns the actual changed service as a live process and drives it over real HTTP exactly as post-service, user-service do in production, directly exercising the structural risk identified above. This closes what was previously a reported capability gap."
       }
-    ]
+    ],
+    "rejected_validations": []
   },
   "ci_history": {
     "auth-service": {
@@ -209,16 +257,16 @@
     {
       "target": "auth-service",
       "command": "npm test",
-      "result": "PASSED",
-      "exit_code": 0,
+      "result": "FAILED",
+      "exit_code": 1,
       "stdout_tail": "\n> auth-service@1.0.0 test\n> node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit\n",
-      "stderr_tail": "(node:31738) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\nPASS ./auth.test.js (13.407 s)\n  Auth Service - POST /register\n    \u2713 should register a new user successfully (621 ms)\n    \u2713 should not register user with existing email (217 ms)\n    \u2713 should not register user without required fields (37 ms)\n    \u2713 should validate email format (20 ms)\n  Auth Service - POST /login\n    \u2713 should login user with correct credentials (336 ms)\n    \u2713 should not login with incorrect password (307 ms)\n    \u2713 should not login with non-existent email (182 ms)\n    \u2713 should not login without email (170 ms)\n    \u2713 should not login without password (166 ms)\n  Auth Service - POST /verify\n    \u2713 should verify valid token (323 ms)\n    \u2713 should reject request without token (309 ms)\n    \u2713 should reject invalid token (308 ms)\n\nTest Suites: 1 passed, 1 total\nTests:       12 passed, 12 total\nSnapshots:   0 total\nTime:        13.937 s, estimated 15 s\nRan all test suites.",
-      "classification": "N/A"
+      "stderr_tail": "(node:32273) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\nFAIL ./verify-cross-service.integration.test.js (13.096 s)\n  \u25cf Cross-service: /verify as actually called by dependent services \u203a SECURITY REGRESSION CHECK: a deleted user must not remain authorized via the verification cache\n\n    SECURITY REGRESSION: /verify returned status 200 with body {\"user\":{\"_id\":\"6a8ffc3f7e8342cac290cb68\",\"firstName\":\"Soon\",\"lastName\":\"Deleted\",\"email\":\"crosssvc-deleted-1787821118928@example.com\",\"bio\":\"\",\"profilePic\":\"\",\"createdAt\":\"2026-08-27T08:58:39.053Z\",\"__v\":0}} for a token belonging to a user deleted moments earlier. The 5-second verification cache introduced in this change authorized a request that should have been rejected -- exactly the caching/staleness risk the vertical-slice risk assessment flagged for this change.\n\n      112 |\n      113 |     if (secondVerifyStatus !== 401) {\n    > 114 |       throw new Error(\n          |             ^\n      115 |         `SECURITY REGRESSION: /verify returned status ${secondVerifyStatus} with body ` +\n      116 |         `${JSON.stringify(secondVerifyBody)} for a token belonging to a user deleted moments ` +\n      117 |         `earlier. The 5-second verification cache introduced in this change authorized a ` +\n\n      at Object.<anonymous> (verify-cross-service.integration.test.js:114:13)\n\nPASS ./auth.test.js (6.268 s)\n\nTest Suites: 1 failed, 1 passed, 2 total\nTests:       1 failed, 13 passed, 14 total\nSnapshots:   0 total\nTime:        19.902 s\nRan all test suites.",
+      "classification": "Unknown / insufficient evidence -- requires human triage (this tool does not auto-classify failure cause)"
     }
   ],
   "recommendation": {
-    "decision": "REQUIRE_ADDITIONAL_VALIDATION",
-    "reason": "Risk is HIGH and the only available automated validation does not directly exercise the changed code path. Require additional (likely manual or cross-service) validation before proceeding."
+    "decision": "ESCALATE",
+    "reason": "At least one selected validation failed. Do not proceed without human review."
   },
-  "generated_at": "2026-08-27T08:47:05.892306+00:00"
+  "generated_at": "2026-08-27T08:58:46.135883+00:00"
 }

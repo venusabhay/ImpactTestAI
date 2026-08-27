@@ -76,7 +76,17 @@ from datetime import datetime, timezone
 #       risk_level, or the recommendation algorithm -- those are computed
 #       identically to v2. CI history is additive evidence for a human
 #       reader, not an automatic risk multiplier.
-POLICY_VERSION = "repo-plus-ci-history-v3"
+#   v4 (Stage 2B): recognizes a real cross-service integration test (one
+#       that spawns the changed service as a live process and drives it
+#       over real HTTP via axios, as opposed to an in-process/mocked/
+#       duplicated app -- see test_file_is_real_cross_service()) as its own
+#       evidence category, CROSS_SERVICE_VALIDATION. When one exists for
+#       the structural risk identified, build_validation_decision() selects
+#       it (previously always rejected as "no such test exists"), and
+#       evidence_confidence can reach HIGH (previously capped at MEDIUM).
+#       This is a change to what counts as evidence, not to how probability
+#       is estimated -- probability remains UNKNOWN per v2/v3.
+POLICY_VERSION = "repo-plus-ci-plus-cross-service-v4"
 
 # Patterns that indicate a NEWLY INTRODUCED risk shape (new state, new
 # timing behavior, destructive operations) -- deliberately excludes generic
@@ -221,6 +231,21 @@ def find_test_evidence(repo, route_path):
     return [h for h in hits if h["file"].endswith(".test.js")]
 
 
+def test_file_is_real_cross_service(repo, test_file):
+    """Does this test file actually drive a live, separately-running instance
+    of the service over real HTTP (spawns a child process AND makes real
+    network calls via axios), as opposed to an in-process/mocked/duplicated
+    app? This is a generic content signal, not tied to any specific
+    filename -- it is what a genuine cross-service integration test looks
+    like as distinct from a supertest-against-an-in-process-app unit test."""
+    path = os.path.join(repo, test_file)
+    if not os.path.exists(path):
+        return False
+    with open(path, "r", errors="ignore") as f:
+        text = f.read()
+    return ("axios" in text) and (re.search(r"child_process|\bspawn\(", text) is not None)
+
+
 def test_file_imports_module(repo, test_file, module_basename):
     """Does the test file actually import the module it claims to test,
     or does it hand-duplicate its own app (a real, generically-detectable
@@ -285,30 +310,58 @@ def build_impact_assessment(repo, change):
                     } for c in cs_hits],
                 })
 
-            # Test coverage evidence
+            # Test coverage evidence -- examine EVERY distinct same-service test
+            # file that references this route, not just the first one found, so
+            # a newly-added test (e.g. a real cross-service integration test
+            # added alongside an existing shadow-duplicate unit test) is not
+            # silently missed.
             test_hits = find_test_evidence(repo, h["path"])
             same_service_tests = [t for t in test_hits if service_name_from_path(t["file"]) == service]
-            if same_service_tests:
-                test_file = same_service_tests[0]["file"]
-                imports_module = test_file_imports_module(repo, test_file, os.path.basename(path))
-                affected_entities.append({
-                    "entity": f"Existing test coverage: {test_file}",
-                    "impact_type": "TEST_COVERAGE",
-                    "confidence": "MEDIUM" if imports_module else "LOW",
-                    "evidence": [{
-                        "type": "TEST_EXECUTION",
-                        "description": f"{t['file']}:{t['line']} references \"{h['path']}\".",
-                    } for t in same_service_tests] + [{
-                        "type": "STATIC_ANALYSIS",
-                        "description": (
-                            f"{test_file} DOES import/require the changed module directly."
-                            if imports_module else
-                            f"{test_file} does NOT import or require {os.path.basename(path)} -- "
-                            f"it appears to re-implement its own test version of the route(s) instead. "
-                            f"A passing result here does not confirm the actual changed code path was exercised."
-                        ),
-                    }],
-                })
+            distinct_test_files = sorted({t["file"] for t in same_service_tests})
+            if distinct_test_files:
+                for test_file in distinct_test_files:
+                    file_hits = [t for t in same_service_tests if t["file"] == test_file]
+                    imports_module = test_file_imports_module(repo, test_file, os.path.basename(path))
+                    is_real_cross_service = test_file_is_real_cross_service(repo, test_file)
+
+                    if is_real_cross_service:
+                        affected_entities.append({
+                            "entity": f"Real cross-service validation: {test_file}",
+                            "impact_type": "CROSS_SERVICE_VALIDATION",
+                            "confidence": "HIGH",
+                            "evidence": [{
+                                "type": "TEST_EXECUTION",
+                                "description": f"{t['file']}:{t['line']} references \"{h['path']}\".",
+                            } for t in file_hits] + [{
+                                "type": "STATIC_ANALYSIS",
+                                "description": (
+                                    f"{test_file} spawns a real, separate process running the changed "
+                                    f"module and drives it over real HTTP (via axios), rather than an "
+                                    f"in-process or mocked app -- this is direct evidence the changed "
+                                    f"behavior can be, and is, exercised as dependent services actually "
+                                    f"call it."
+                                ),
+                            }],
+                        })
+                    else:
+                        affected_entities.append({
+                            "entity": f"Existing test coverage: {test_file}",
+                            "impact_type": "TEST_COVERAGE",
+                            "confidence": "MEDIUM" if imports_module else "LOW",
+                            "evidence": [{
+                                "type": "TEST_EXECUTION",
+                                "description": f"{t['file']}:{t['line']} references \"{h['path']}\".",
+                            } for t in file_hits] + [{
+                                "type": "STATIC_ANALYSIS",
+                                "description": (
+                                    f"{test_file} DOES import/require the changed module directly."
+                                    if imports_module else
+                                    f"{test_file} does NOT import or require {os.path.basename(path)} -- "
+                                    f"it appears to re-implement its own test version of the route(s) instead. "
+                                    f"A passing result here does not confirm the actual changed code path was exercised."
+                                ),
+                            }],
+                        })
             else:
                 uncertainty_sources.append(
                     f"No test file evidence found for {h['method']} {h['path']} in service '{service}'."
@@ -393,13 +446,19 @@ def build_risk_assessment(change, impact):
     )
 
     test_coverage_entities = [e for e in impact["affected_entities"] if e["impact_type"] == "TEST_COVERAGE"]
-    direct_test_coverage = any(e["confidence"] == "MEDIUM" for e in test_coverage_entities)  # MEDIUM = imports module
+    cross_service_entities = [e for e in impact["affected_entities"] if e["impact_type"] == "CROSS_SERVICE_VALIDATION"]
+    direct_test_coverage = any(e["confidence"] == "MEDIUM" for e in test_coverage_entities) or bool(cross_service_entities)
+    has_cross_service_validation = bool(cross_service_entities)
 
     impact_confidence = "HIGH" if structural_exposure_score > 0 or changed_paths else "LOW"
     # Always LOW: there is no basis to be more confident than that about a
     # dimension (probability) this policy version explicitly declines to estimate.
     probability_confidence = "LOW"
-    evidence_confidence = "MEDIUM" if direct_test_coverage else "LOW"
+    # HIGH specifically when a real cross-service test exists (the strongest
+    # evidence this slice can produce -- exercises the actual dependency
+    # relationship, not merely "imports the module"); MEDIUM for module-import
+    # coverage alone; LOW otherwise.
+    evidence_confidence = "HIGH" if has_cross_service_validation else ("MEDIUM" if direct_test_coverage else "LOW")
 
     confidences = [impact_confidence, probability_confidence, evidence_confidence]
     order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
@@ -437,6 +496,7 @@ def build_risk_assessment(change, impact):
         "sensitive_name_hit": sensitive_name_hit,
         "risk_pattern_hits": pattern_hits,
         "direct_test_coverage": direct_test_coverage,
+        "has_cross_service_validation": has_cross_service_validation,
         "policy_version": POLICY_VERSION,
     }
 
@@ -605,7 +665,11 @@ def build_validation_decision(repo, change, risk):
                 f"'{svc}' service's existing test suite is the best available real validation for this change "
                 f"(exists, runs via 'npm test')."
             )
-            if not risk["direct_test_coverage"]:
+            if risk["has_cross_service_validation"]:
+                reason += (" This service's test run ALSO includes a real cross-service integration test "
+                           "(spawns the actual service as a live process, driven over real HTTP) -- see "
+                           "the E2E_TEST entry below.")
+            elif not risk["direct_test_coverage"]:
                 reason += (" NOTE: repo-evidence indicates this suite does not import the changed module directly "
                             "(it re-implements its own routes for testing) -- treat a PASS here as a weak signal, "
                             "not confirmation that the changed code path was exercised.")
@@ -622,18 +686,36 @@ def build_validation_decision(repo, change, risk):
                 "decision_reason": f"No 'test' script found in {svc}/package.json.",
             })
 
-    # Explicitly reject the one validation that would matter most, and say why
+    # The validation that would matter most: does a real cross-service test
+    # exist for the structural risk identified above? Select it if so
+    # (it runs as part of the 'npm test' invocation already selected above,
+    # since it lives alongside the service's other tests); otherwise, keep
+    # being explicit that this is a capability gap, not a silent omission.
     if risk["structural_exposure"]["caller_services"]:
-        rejected.append({
-            "type": "E2E_TEST",
-            "target": ", ".join(risk["structural_exposure"]["caller_services"]),
-            "decision_reason": (
-                "A cross-service integration test that actually calls the live, changed endpoint from "
-                f"{', '.join(risk['structural_exposure']['caller_services'])} would directly validate the "
-                "structural risk identified above, but no such test exists in this repository. This is a "
-                "capability gap, not a validation that was run and passed."
-            ),
-        })
+        if risk["has_cross_service_validation"]:
+            selected.append({
+                "type": "E2E_TEST",
+                "target": ", ".join(risk["structural_exposure"]["caller_services"]),
+                "command": "(covered by the INTEGRATION_TEST run above)",
+                "decision_reason": (
+                    "A real cross-service integration test exists that spawns the actual changed service as "
+                    "a live process and drives it over real HTTP exactly as "
+                    f"{', '.join(risk['structural_exposure']['caller_services'])} do in production, directly "
+                    "exercising the structural risk identified above. This closes what was previously a "
+                    "reported capability gap."
+                ),
+            })
+        else:
+            rejected.append({
+                "type": "E2E_TEST",
+                "target": ", ".join(risk["structural_exposure"]["caller_services"]),
+                "decision_reason": (
+                    "A cross-service integration test that actually calls the live, changed endpoint from "
+                    f"{', '.join(risk['structural_exposure']['caller_services'])} would directly validate the "
+                    "structural risk identified above, but no such test exists in this repository. This is a "
+                    "capability gap, not a validation that was run and passed."
+                ),
+            })
 
     return {"selected_validations": selected, "rejected_validations": rejected}
 
@@ -643,6 +725,12 @@ def run_validation(repo, node_bin_dir, selected):
     env = os.environ.copy()
     env["PATH"] = f"{node_bin_dir}:{env.get('PATH', '')}"
     for v in selected:
+        if v["type"] == "E2E_TEST":
+            # Not independently executable: it's covered by the INTEGRATION_TEST
+            # run for its owning service (the cross-service test file lives
+            # alongside that service's other tests and runs as part of the same
+            # 'npm test' invocation). Its result is reflected there.
+            continue
         svc_dir = os.path.join(repo, "services", v["target"])
         try:
             result = subprocess.run(
@@ -705,6 +793,7 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     direct = [e for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
     transitive = [e for e in impact["affected_entities"] if e["impact_type"] == "TRANSITIVE"]
     test_cov = [e for e in impact["affected_entities"] if e["impact_type"] == "TEST_COVERAGE"]
+    cross_service_cov = [e for e in impact["affected_entities"] if e["impact_type"] == "CROSS_SERVICE_VALIDATION"]
 
     lines = []
     lines.append("# Change Risk & Validation Report\n")
@@ -724,7 +813,7 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     lines.append("")
 
     lines.append("## EVIDENCE\n")
-    for e in direct + transitive + test_cov:
+    for e in direct + transitive + test_cov + cross_service_cov:
         for ev in e["evidence"]:
             lines.append(f"- [{ev['type']}] {ev['description']}")
     lines.append("")

@@ -1,6 +1,6 @@
 # Change Risk & Validation Report
 
-*Generated 2026-08-27T08:47:05.891463+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
+*Generated 2026-08-27T08:58:46.134882+00:00Z from repository at `/Users/abhay/git-venusabhay/social-media-mini`, comparing working tree against `HEAD` (HEAD `b6fd0644e0`).*
 
 ## CHANGE
 
@@ -28,6 +28,16 @@ services/auth-service/server.js | 15 +++++++++++++--
 - [TEST_EXECUTION] services/auth-service/auth.test.js:321 references "/verify".
 - [TEST_EXECUTION] services/auth-service/auth.test.js:329 references "/verify".
 - [STATIC_ANALYSIS] services/auth-service/auth.test.js does NOT import or require server.js -- it appears to re-implement its own test version of the route(s) instead. A passing result here does not confirm the actual changed code path was exercised.
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:11 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:13 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:16 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:62 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:72 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:73 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:88 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:105 references "/verify".
+- [TEST_EXECUTION] services/auth-service/verify-cross-service.integration.test.js:115 references "/verify".
+- [STATIC_ANALYSIS] services/auth-service/verify-cross-service.integration.test.js spawns a real, separate process running the changed module and drives it over real HTTP (via axios), rather than an in-process or mocked app -- this is direct evidence the changed behavior can be, and is, exercised as dependent services actually call it.
 
 ## RISK
 
@@ -35,7 +45,7 @@ services/auth-service/server.js | 15 +++++++++++++--
 
 Probability: **UNKNOWN** -- Not estimated: no historical outcome data is available in this slice to calibrate a failure probability against. The risk indicators below are evidence that certain risk factors are present -- they are not a measurement of how likely a failure is.
 
-Confidence: **LOW** (impact: HIGH, probability: LOW, evidence: LOW)
+Confidence: **LOW** (impact: HIGH, probability: LOW, evidence: HIGH)
 
 Risk indicators observed (factors present -- not a probability):
 - introduces new in-memory state
@@ -55,17 +65,17 @@ Risk indicators observed (factors present -- not a probability):
 
 ## WHY
 
-The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff contains factors associated with elevated risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). These are indicators the risk level accounts for, not a measured probability of failure. CI history for auth-service: No confirmed CI job failures specific to this service were found across 7 relevant run(s) examined (2 job(s) were CANCELLED because a different, unrelated job in the same run failed -- that is not evidence against this service, and is not counted as a failure). The relevant existing test file does not import the changed module -- it duplicates the route logic instead, so passing tests are a weak, indirect signal at best. Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
+The changed endpoint is called by 2 other service(s): post-service, user-service. The changed route's name/path matches a security-sensitive pattern (auth/token/password/etc.). The diff contains factors associated with elevated risk: introduces new in-memory state; introduces or touches caching (statefulness / staleness risk). These are indicators the risk level accounts for, not a measured probability of failure. CI history for auth-service: No confirmed CI job failures specific to this service were found across 7 relevant run(s) examined (2 job(s) were CANCELLED because a different, unrelated job in the same run failed -- that is not evidence against this service, and is not counted as a failure). Production usage frequency and historical incident rate for this endpoint are unknown -- this assessment is based on repository evidence only.
 
 ## RECOMMENDED VALIDATION
 
-- RUN: `npm test` in `auth-service` -- 'auth-service' service's existing test suite is the best available real validation for this change (exists, runs via 'npm test'). NOTE: repo-evidence indicates this suite does not import the changed module directly (it re-implements its own routes for testing) -- treat a PASS here as a weak signal, not confirmation that the changed code path was exercised.
-- NOT AVAILABLE: E2E_TEST for `post-service, user-service` -- A cross-service integration test that actually calls the live, changed endpoint from post-service, user-service would directly validate the structural risk identified above, but no such test exists in this repository. This is a capability gap, not a validation that was run and passed.
+- RUN: `npm test` in `auth-service` -- 'auth-service' service's existing test suite is the best available real validation for this change (exists, runs via 'npm test'). This service's test run ALSO includes a real cross-service integration test (spawns the actual service as a live process, driven over real HTTP) -- see the E2E_TEST entry below.
+- RUN: `(covered by the INTEGRATION_TEST run above)` in `post-service, user-service` -- A real cross-service integration test exists that spawns the actual changed service as a live process and drives it over real HTTP exactly as post-service, user-service do in production, directly exercising the structural risk identified above. This closes what was previously a reported capability gap.
 
 ## VALIDATION RESULT
 
-- `npm test` in `auth-service`: **PASSED** (exit code 0)
-  - classification: N/A
+- `npm test` in `auth-service`: **FAILED** (exit code 1)
+  - classification: Unknown / insufficient evidence -- requires human triage (this tool does not auto-classify failure cause)
 
 <details><summary>auth-service test output (tail)</summary>
 
@@ -74,38 +84,38 @@ The changed endpoint is called by 2 other service(s): post-service, user-service
 > auth-service@1.0.0 test
 > node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit
 
-(node:31738) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(node:32273) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-PASS ./auth.test.js (13.407 s)
-  Auth Service - POST /register
-    ✓ should register a new user successfully (621 ms)
-    ✓ should not register user with existing email (217 ms)
-    ✓ should not register user without required fields (37 ms)
-    ✓ should validate email format (20 ms)
-  Auth Service - POST /login
-    ✓ should login user with correct credentials (336 ms)
-    ✓ should not login with incorrect password (307 ms)
-    ✓ should not login with non-existent email (182 ms)
-    ✓ should not login without email (170 ms)
-    ✓ should not login without password (166 ms)
-  Auth Service - POST /verify
-    ✓ should verify valid token (323 ms)
-    ✓ should reject request without token (309 ms)
-    ✓ should reject invalid token (308 ms)
+FAIL ./verify-cross-service.integration.test.js (13.096 s)
+  ● Cross-service: /verify as actually called by dependent services › SECURITY REGRESSION CHECK: a deleted user must not remain authorized via the verification cache
 
-Test Suites: 1 passed, 1 total
-Tests:       12 passed, 12 total
+    SECURITY REGRESSION: /verify returned status 200 with body {"user":{"_id":"6a8ffc3f7e8342cac290cb68","firstName":"Soon","lastName":"Deleted","email":"crosssvc-deleted-1787821118928@example.com","bio":"","profilePic":"","createdAt":"2026-08-27T08:58:39.053Z","__v":0}} for a token belonging to a user deleted moments earlier. The 5-second verification cache introduced in this change authorized a request that should have been rejected -- exactly the caching/staleness risk the vertical-slice risk assessment flagged for this change.
+
+      112 |
+      113 |     if (secondVerifyStatus !== 401) {
+    > 114 |       throw new Error(
+          |             ^
+      115 |         `SECURITY REGRESSION: /verify returned status ${secondVerifyStatus} with body ` +
+      116 |         `${JSON.stringify(secondVerifyBody)} for a token belonging to a user deleted moments ` +
+      117 |         `earlier. The 5-second verification cache introduced in this change authorized a ` +
+
+      at Object.<anonymous> (verify-cross-service.integration.test.js:114:13)
+
+PASS ./auth.test.js (6.268 s)
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       1 failed, 13 passed, 14 total
 Snapshots:   0 total
-Time:        13.937 s, estimated 15 s
+Time:        19.902 s
 Ran all test suites.
 ```
 </details>
 
 ## DECISION
 
-**REQUIRE_ADDITIONAL_VALIDATION**
+**ESCALATE**
 
-Risk is HIGH and the only available automated validation does not directly exercise the changed code path. Require additional (likely manual or cross-service) validation before proceeding.
+At least one selected validation failed. Do not proceed without human review.
 
 ## IMPORTANT UNKNOWNS
 
@@ -113,4 +123,4 @@ Risk is HIGH and the only available automated validation does not directly exerc
 - Production call volume / exposure for POST /verify: Unknown / insufficient evidence (no production telemetry access in this slice).
 
 ---
-*Risk/validation rules: `repo-plus-ci-history-v3`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*
+*Risk/validation rules: `repo-plus-ci-plus-cross-service-v4`. Re-running this analysis with the same policy version against the same repo state and ref should reproduce this exact assessment.*

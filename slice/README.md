@@ -4,7 +4,9 @@ This is the first real implementation of the design8/design9 decision chain, sco
 
 **Stage 1 (frozen):** one repository, no production/incident/organizational access, one real change, taken all the way through to a validated, explainable decision.
 
-**Stage 2:** the same chain, with exactly one real operational data source added — this repository's actual GitHub Actions run history — kept strictly as additive evidence, never as an input to probability or the recommendation algorithm. See "Stage 2" below.
+**Stage 2 (accepted):** the same chain, with exactly one real operational data source added — this repository's actual GitHub Actions run history — kept strictly as additive evidence, never as an input to probability or the recommendation algorithm. See "Stage 2" below.
+
+**Stage 2B:** closes the specific capability gap Stage 1 identified and Stage 2 declined to paper over — a real cross-service integration test that actually exercises the changed `/verify` behavior the way `post-service`/`user-service` depend on it. Result: **it found a real regression.** See "Stage 2B" below.
 
 ```
 Repository / PR
@@ -62,6 +64,24 @@ Stage 1 could only ever say "the repository looks like this." It had no way to a
 1. **What did CI history add that repository-only analysis could not know?** A concrete answer to "has this area broken before?" — previously an explicit unknown, now an explicit, evidenced answer ("no confirmed failures in the examined window") rather than a gap in the report.
 2. **Did it materially improve the decision for this change?** No — the decision was already correctly `REQUIRE_ADDITIONAL_VALIDATION` for reasons CI history doesn't touch (the test-coverage gap and structural exposure). A clean CI history is reassuring context, not grounds to relax that recommendation, and the tool doesn't let it.
 3. **Is CI history worth retaining as part of the product, or should it stay optional?** Worth retaining as a standard evidence source — it's cheap (same repo, no new system, ~8 API calls, no auth), and it's the only source so far that can distinguish "we have no data" from "we checked and it's been stable." Whether it should ever influence risk_level/probability, rather than staying purely descriptive, is a real question — but not one this stage's evidence answers, and not one to decide before a change exists where CI history *does* show real historical failures for the changed area.
+
+## Stage 2B — closing the cross-service validation gap
+
+Every prior stage's report said the same thing: *"a cross-service integration test that actually calls the live, changed endpoint from post-service, user-service would directly validate the structural risk identified above, but no such test exists in this repository."* Stage 2B's mandate was explicit: don't just make the report say more tests passed — answer whether the vertical slice can identify and execute a validation that actually exercises the changed `/verify` behavior across the services that depend on it.
+
+`services/auth-service/verify-cross-service.integration.test.js` (added to the local clone at `/Users/abhay/git-venusabhay/social-media-mini`; not pushed to GitHub) does exactly that:
+
+* It spawns the real, **unmodified** `server.js` as a live child process, connected to a real (ephemeral, in-memory) MongoDB — not imported in-process, not mocked.
+* It drives that live process over real HTTP using `axios`, with the exact same call shape `post-service`/`user-service`'s `protect` middleware uses: `axios.post('${AUTH_SERVICE_URL}/verify', { token })`.
+* Its second test targets the specific risk the platform's own `RiskAssessment` flagged for this change (`introduces or touches caching (statefulness / staleness risk)`): it registers a user, authenticates, primes the verification cache, **deletes the user directly from the database**, then immediately re-verifies the same token within the 5-second cache window — exactly what would happen if a real client made two requests in quick succession while an account was being deactivated.
+
+**Result: the test failed.** The real, running service returned `200 OK` with a cached, stale user object for a token belonging to a user that no longer existed — a genuine authorization-bypass regression introduced by the caching change, invisible to every test that existed before this one (the existing suite never imports `server.js`, and no test previously touched the cache at all).
+
+`analyze_change.py` was extended (not reopening design8/design9) to recognize this kind of test generically — `test_file_is_real_cross_service()` detects a test file that both makes real `axios` calls and spawns a child process, as distinct from an in-process/mocked test — and to select it as validation rather than reporting it as an unavailable capability. When it ran and failed, the pipeline's existing `any_failed` rule in `final_recommendation()` did the rest, unchanged: the decision became **`ESCALATE`**, with the exact regression message surfaced in the report's `VALIDATION RESULT` section.
+
+**This is the strongest result the vertical slice has produced so far:** the platform didn't just hedge with "require more validation" — when the specific validation it said was missing was actually built, it caught a real defect the existing (weak) test suite structurally could not have found. Bumped `POLICY_VERSION` to `repo-plus-ci-plus-cross-service-v4` to reflect the new evidence category and validation-selection rule; probability is still not estimated, per v2/v3.
+
+The application bug itself (the stale-cache authorization) was deliberately left unfixed — fixing it would remove the very evidence Stage 2B was built to demonstrate the platform can produce. The correct next action, per the report's own `ESCALATE` decision, is a human engineering decision (e.g. invalidate the cache entry on user deletion, or check a `deletedAt`/`active` flag on every verify regardless of cache), not something this tool does automatically.
 
 ## Deliberate simplifications vs. the frozen design
 
