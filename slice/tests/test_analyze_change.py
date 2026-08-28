@@ -8,6 +8,8 @@ behavior. Fixture-/network-dependent behavior (git diffs, GitHub Actions
 history, real npm test execution) is exercised separately by the fixture
 smoke test in the CI workflow, not here.
 """
+import http.client
+import json
 import os
 import subprocess
 import sys
@@ -319,3 +321,247 @@ def test_explicit_timeout_extension_can_turn_a_timeout_into_a_real_pass(tmp_path
     assert long_enough[0]["result"] == "PASSED"
     assert long_enough[0]["exit_code"] == 0
     assert long_enough[0]["timeout_seconds"] == 5
+
+
+# ---------------------------------------------------------------------------
+# run_validation -- npm install failure handling (see
+# slice/PIPELINE_FAIL_SAFE_DESIGN.md, written after two real pilot crashes:
+# an unhandled subprocess.TimeoutExpired from "npm install" itself, and an
+# unhandled http.client.IncompleteRead from CI-history fetching -- both
+# previously took the whole process down with no report.md/audit.json
+# produced at all. subprocess.run is mocked so the three install shapes
+# (timeout, non-zero exit, success) are distinguished deterministically,
+# without a real 300-second wait.
+# ---------------------------------------------------------------------------
+
+def _install_side_effect(install_result_or_exception):
+    """Returns a subprocess.run side_effect that only affects the "npm
+    install" call -- the validation command, if reached, gets a plain
+    successful CompletedProcess. Raises if the validation command runs
+    when it shouldn't (install failed/timed out) -- the "do not silently
+    continue to validation" requirement, checked structurally."""
+    def side_effect(cmd, **kwargs):
+        if cmd == "npm install":
+            if isinstance(install_result_or_exception, BaseException):
+                raise install_result_or_exception
+            return install_result_or_exception
+        raise AssertionError(f"validation command {cmd!r} must not run when npm install did not succeed")
+    return side_effect
+
+
+def test_run_validation_npm_install_timeout_is_inconclusive_not_a_crash(tmp_path):
+    (tmp_path / "component").mkdir()
+    selected = _selected_validation()
+    timeout_exc = subprocess.TimeoutExpired(cmd="npm install", timeout=ac.NPM_INSTALL_TIMEOUT_SECONDS)
+    with patch("analyze_change.subprocess.run", side_effect=_install_side_effect(timeout_exc)):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+    assert len(outcomes) == 1
+    o = outcomes[0]
+    assert o["command"] == "npm install"
+    assert o["result"] == "INCONCLUSIVE"
+    assert o["result"] not in ("PASSED", "FAILED")
+    assert o["exit_code"] is None
+    assert o["classification"] == "INFRASTRUCTURE (dependency install timed out)"
+    assert o["install_timeout_seconds"] == ac.NPM_INSTALL_TIMEOUT_SECONDS
+
+
+def test_run_validation_npm_install_nonzero_exit_is_distinct_from_timeout(tmp_path):
+    (tmp_path / "component").mkdir()
+    selected = _selected_validation()
+    failed_install = subprocess.CompletedProcess(args="npm install", returncode=1, stdout="", stderr="ENOENT")
+    with patch("analyze_change.subprocess.run", side_effect=_install_side_effect(failed_install)):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+    assert len(outcomes) == 1
+    o = outcomes[0]
+    assert o["result"] == "INCONCLUSIVE"
+    assert o["exit_code"] == 1
+    # The whole point: a human/audit reader must be able to tell these two
+    # INFRASTRUCTURE outcomes apart.
+    assert o["classification"] == "INFRASTRUCTURE (dependency install failed)"
+    assert o["classification"] != "INFRASTRUCTURE (dependency install timed out)"
+    assert o["install_timeout_seconds"] == ac.NPM_INSTALL_TIMEOUT_SECONDS
+
+
+def test_run_validation_npm_install_success_still_reaches_validation(tmp_path):
+    """Confirms the "do not silently continue to validation" rule is a
+    conditional check, not an accidental removal of the validation step
+    entirely -- a successful install still runs the real command."""
+    (tmp_path / "component").mkdir()
+    selected = _selected_validation(command="echo ok")
+    ok_install = subprocess.CompletedProcess(args="npm install", returncode=0, stdout="", stderr="")
+
+    def side_effect(cmd, **kwargs):
+        if cmd == "npm install":
+            return ok_install
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok\n", stderr="")
+
+    with patch("analyze_change.subprocess.run", side_effect=side_effect):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+    assert len(outcomes) == 1
+    assert outcomes[0]["command"] == "echo ok"
+    assert outcomes[0]["result"] == "PASSED"
+
+
+def test_install_timeout_outcome_still_escalates():
+    """End-to-end contract check, same shape as the existing
+    validation-timeout test: an install-timeout INCONCLUSIVE outcome must
+    still force ESCALATE regardless of risk level or confidence."""
+    install_timeout_outcome = [{
+        "target": "component", "command": "npm install", "result": "INCONCLUSIVE",
+        "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
+        "classification": "INFRASTRUCTURE (dependency install timed out)",
+        "install_timeout_seconds": ac.NPM_INSTALL_TIMEOUT_SECONDS,
+    }]
+    for risk_level in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+        for overall_confidence in ("LOW", "MEDIUM", "HIGH"):
+            risk = _risk(risk_level=risk_level, overall_confidence=overall_confidence, direct_test_coverage=True)
+            decision, _ = ac.final_recommendation(risk, install_timeout_outcome, {"selected_validations": [1]})
+            assert decision == "ESCALATE"
+
+
+def _minimal_report_args(outcomes, ci_history=None):
+    """The smallest valid set of render_report() arguments -- enough to
+    exercise every line render_report() actually reaches for these test
+    scenarios (no discovered impact, no CI history or a failed CI-history
+    fetch), so "does this crash, and does the output look right" can be
+    checked directly against the real function rather than inferred from
+    its inputs alone."""
+    change = {"base_ref": "HEAD", "repo_head": "0" * 40, "diff_stat": "1 file changed"}
+    impact = {"affected_entities": [], "uncertainty_sources": []}
+    risk = {
+        "risk_level": "LOW", "business_impact": "LOW", "exposure": "LOW",
+        "probability": "UNKNOWN", "probability_reason": "not estimated",
+        "confidence": {"overall": "LOW", "impact_confidence": "LOW",
+                       "probability_confidence": "LOW", "evidence_confidence": "LOW"},
+        "risk_indicators": [], "sensitive_name_hit": False, "direct_test_coverage": False,
+        "structural_exposure": {"caller_services": [], "middleware_route_count": 0},
+        "policy_version": ac.POLICY_VERSION,
+    }
+    validation_decision = {"selected_validations": [], "rejected_validations": []}
+    recommendation = ac.final_recommendation(risk, outcomes, validation_decision)
+    return change, impact, risk, validation_decision, recommendation
+
+
+def test_npm_install_timeout_produces_a_renderable_report_and_audit_record():
+    """Confirms the failure path actually reaches report.md/audit.json,
+    not just that the outcome dict looks right in isolation -- calls the
+    real render_report() and a real json.dumps(), the same two steps
+    main() performs, against the exact outcome shape the timeout handler
+    produces."""
+    outcomes = [{
+        "target": "component", "command": "npm install", "result": "INCONCLUSIVE",
+        "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
+        "classification": "INFRASTRUCTURE (dependency install timed out)",
+        "install_timeout_seconds": ac.NPM_INSTALL_TIMEOUT_SECONDS,
+    }]
+    change, impact, risk, validation_decision, recommendation = _minimal_report_args(outcomes)
+    report = ac.render_report(change, impact, risk, validation_decision, outcomes, recommendation,
+                               "/tmp/repo", "", ci_history=None, run_id="test-run-id")
+    assert "INCONCLUSIVE" in report
+    assert "INFRASTRUCTURE (dependency install timed out)" in report
+    assert f"install timeout allowed: {ac.NPM_INSTALL_TIMEOUT_SECONDS}s" in report
+    assert "ESCALATE" in report
+    # Never fabricated as a pass or a fail:
+    assert "**PASSED**" not in report
+    assert "**FAILED**" not in report
+    # Must be a valid, complete audit record -- json.dumps must not raise.
+    audit_record = {"outcomes": outcomes, "risk": risk, "recommendation": {"decision": recommendation[0]}}
+    json.dumps(audit_record)
+
+
+# ---------------------------------------------------------------------------
+# fetch_ci_history -- transient network/HTTP failure handling (see
+# slice/PIPELINE_FAIL_SAFE_DESIGN.md). _gh_api_get is mocked so
+# IncompleteRead and connection failures are exercised deterministically,
+# without a real network dependency.
+# ---------------------------------------------------------------------------
+
+def test_fetch_ci_history_handles_incomplete_read_without_crashing():
+    with patch("analyze_change._gh_api_get", side_effect=http.client.IncompleteRead(b"partial")):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["available"] is False
+    assert "IncompleteRead" in record["error"]
+    assert record["historical_signal"] == "UNKNOWN / insufficient evidence"
+    # Never fabricated: no counts, no job results, despite the crash.
+    assert record["service_failures"] == 0
+    assert record["service_successes"] == 0
+    assert record["service_job_results"] == []
+
+
+def test_fetch_ci_history_handles_connection_error_without_crashing():
+    with patch("analyze_change._gh_api_get", side_effect=ConnectionResetError("connection reset by peer")):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["available"] is False
+    assert "ConnectionResetError" in record["error"]
+    assert record["service_job_results"] == []
+
+
+def test_fetch_ci_history_distinguishes_unreachable_from_no_matching_history():
+    """The two 'nothing to report' shapes must stay distinguishable: a
+    crash-caused UNKNOWN must not read the same as a clean fetch that
+    simply found no matching CI job."""
+    with patch("analyze_change._gh_api_get", side_effect=http.client.IncompleteRead(b"partial")):
+        unreachable = ac.fetch_ci_history("owner/repo", "myservice")
+    with patch("analyze_change._gh_api_get", return_value={"workflow_runs": []}):
+        no_history = ac.fetch_ci_history("owner/repo", "myservice")
+
+    assert unreachable["available"] is False
+    assert no_history["available"] is True
+    assert unreachable["error"] is not None
+    assert no_history["error"] is None
+    assert unreachable["historical_signal"] != no_history["historical_signal"]
+
+
+def test_fetch_ci_history_preserves_partial_evidence_when_a_later_fetch_fails():
+    """Two runs' worth of job data is fetched; the second fetch fails.
+    Evidence already collected from the first run must survive, not be
+    discarded because a later step crashed."""
+    runs_response = {
+        "workflow_runs": [
+            {"id": 1, "path": ".github/workflows/ci.yml", "status": "completed",
+             "created_at": "2026-01-01T00:00:00Z", "url": "https://api.github.com/run/1",
+             "html_url": "https://x/1"},
+            {"id": 2, "path": ".github/workflows/ci.yml", "status": "completed",
+             "created_at": "2026-01-02T00:00:00Z", "url": "https://api.github.com/run/2",
+             "html_url": "https://x/2"},
+        ]
+    }
+    jobs_ok = {"jobs": [{"name": "Test (myservice)", "conclusion": "success"}]}
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs_response
+        if url == "https://api.github.com/run/1/jobs":
+            return jobs_ok
+        if url == "https://api.github.com/run/2/jobs":
+            raise http.client.IncompleteRead(b"partial")
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+
+    assert record["available"] is True
+    assert len(record["service_job_results"]) == 1  # from run 1, preserved
+    assert record["service_successes"] == 1
+    assert any("Could not fetch job detail for run 2" in lim for lim in record["limitations"])
+    # The successfully-collected evidence is real, not invented for the
+    # run whose fetch failed:
+    assert record["service_job_results"][0]["run_id"] == 1
+
+
+def test_ci_history_crash_produces_a_renderable_report_and_never_fabricates():
+    """Same 'does this actually reach report.md/audit.json' check as the
+    npm-install test above, for the CI-history crash path."""
+    with patch("analyze_change._gh_api_get", side_effect=http.client.IncompleteRead(b"partial")):
+        ci_history = {"myservice": ac.fetch_ci_history("owner/repo", "myservice")}
+    outcomes = []
+    change, impact, risk, validation_decision, recommendation = _minimal_report_args(outcomes, ci_history)
+    report = ac.render_report(change, impact, risk, validation_decision, outcomes, recommendation,
+                               "/tmp/repo", "", ci_history=ci_history, run_id="test-run-id")
+    assert "UNKNOWN / insufficient evidence" in report
+    assert "IncompleteRead" in report
+    # Never fabricated as a clean or a failing history:
+    assert "0 failed" not in report  # would imply a real, examined-and-clean history
+    assert "confirmed CI job failure" not in report
+    audit_record = {"ci_history": ci_history, "risk": risk, "recommendation": {"decision": recommendation[0]}}
+    json.dumps(audit_record)

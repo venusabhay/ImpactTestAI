@@ -47,6 +47,7 @@ repository's public GitHub Actions history) and runs its own existing
 `npm test`. It does not modify, commit, or push anything anywhere.
 """
 import argparse
+import http.client
 import json
 import os
 import re
@@ -65,7 +66,31 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.8.0-pilot"
+TOOL_VERSION = "0.9.0-pilot"
+# 0.9.0 (pipeline fail-safe, no policy/discovery change): two evidence-
+# gathering code paths could previously crash the entire process with no
+# report.md/audit.json produced at all -- found by real pilot runs, not
+# synthetically. (1) run_validation()'s "npm install" subprocess.run() had
+# no try/except at all, so subprocess.TimeoutExpired (confirmed to occur
+# for real: one pilot repository's install genuinely took ~360s against
+# the 300s limit) propagated uncaught. Now caught, reported as
+# INCONCLUSIVE with a classification distinct from the pre-existing
+# non-zero-exit-code case ("... timed out" vs "... failed"), and the
+# install_timeout_seconds actually used is recorded on the outcome
+# (surfaced in report.md and audit.json), exactly mirroring how the
+# validation command's own timeout was already handled. (2)
+# fetch_ci_history() already caught four exception types at both of its
+# _gh_api_get() call sites, and already distinguished "could not retrieve"
+# from "no matching history found," and already preserved per-run evidence
+# collected before a later run's fetch failed -- but http.client.IncompleteRead
+# (confirmed to occur for real, against a different pilot repository) isn't
+# a subclass of any of the four, so it was never caught. Now also caught,
+# via http.client.HTTPException (IncompleteRead's parent) and
+# ConnectionError, added to the existing tuple -- no other change, since
+# the surrounding machinery was already correct once the exception reaches
+# it. Neither fix touches probability, risk_level, confidence, CI-evidence
+# weighting, or any decision rule; POLICY_VERSION is unchanged. See
+# slice/PIPELINE_FAIL_SAFE_DESIGN.md.
 # 0.8.0: --validation-timeout-seconds (default 180, unchanged) replaces the
 # previously hardcoded 180s literal in run_validation()'s subprocess.run()
 # call for the selected validation command -- see
@@ -661,6 +686,19 @@ def _gh_api_get(url, timeout=15):
         return json.load(resp)
 
 
+# Exceptions treated as "the network/API misbehaved," never as a crash and
+# never as evidence of anything about the repository. http.client.HTTPException
+# (parent of IncompleteRead, observed for real in pilot testing against a
+# GitHub Actions-heavy repository -- a truncated response mid-read) and
+# ConnectionError (ConnectionReset/Aborted/BrokenPipe/Refused -- the other
+# common "the connection dropped" shapes) are additions; the other four were
+# already caught before this fix. See PIPELINE_FAIL_SAFE_DESIGN.md.
+_CI_HISTORY_TRANSIENT_ERRORS = (
+    urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError,
+    http.client.HTTPException, ConnectionError,
+)
+
+
 def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.yml", per_page=100, timeout=15):
     """Fetch this repository's real GitHub Actions run history for the CI
     workflow, and extract job-level outcomes relevant to `service`.
@@ -692,7 +730,7 @@ def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.y
         runs_data = _gh_api_get(
             f"https://api.github.com/repos/{github_repo}/actions/runs?per_page={per_page}", timeout=timeout
         )
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+    except _CI_HISTORY_TRANSIENT_ERRORS as e:
         record["error"] = f"{type(e).__name__}: {e}"
         record["limitations"].append(
             "Could not reach the GitHub Actions API -- CI history is UNKNOWN, not assumed clean or absent."
@@ -712,7 +750,7 @@ def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.y
     for r in runs:
         try:
             jobs_data = _gh_api_get(r["url"] + "/jobs", timeout=timeout)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+        except _CI_HISTORY_TRANSIENT_ERRORS as e:
             record["limitations"].append(f"Could not fetch job detail for run {r['id']}: {e}")
             continue
 
@@ -874,7 +912,17 @@ def build_validation_decision(repo, change, risk, components):
     return {"selected_validations": selected, "rejected_validations": rejected}
 
 
-def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_timeout_seconds=180):
+# Unchanged value (300s), now a named constant instead of a bare literal so
+# it can be referenced consistently in both the subprocess.run() call and
+# the outcome dict recorded when it fires -- see PIPELINE_FAIL_SAFE_DESIGN.md.
+# Not exposed as a CLI flag: unlike validation_timeout_seconds, this
+# milestone's scope is "handle failure safely and show the value used," not
+# "make it configurable."
+NPM_INSTALL_TIMEOUT_SECONDS = 300
+
+
+def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_timeout_seconds=180,
+                    npm_install_timeout_seconds=NPM_INSTALL_TIMEOUT_SECONDS):
     outcomes = []
     env = os.environ.copy()
     if node_bin_dir:
@@ -899,9 +947,28 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             # judged, only whether the command can run at all. Off by
             # default so Stage 1/2/2B's exact prior behavior (dependencies
             # installed manually beforehand) is unaffected.
-            install = subprocess.run(
-                "npm install", cwd=svc_dir, shell=True, capture_output=True, text=True, timeout=300, env=env,
-            )
+            try:
+                install = subprocess.run(
+                    "npm install", cwd=svc_dir, shell=True, capture_output=True, text=True,
+                    timeout=npm_install_timeout_seconds, env=env,
+                )
+            except subprocess.TimeoutExpired:
+                # shell=True means the process subprocess.run kills on timeout
+                # is the shell it spawned, not necessarily `npm` itself or
+                # whatever it forked -- the underlying install may continue
+                # running in the background after this fires. That is a
+                # known, general property of shell=True + timeout=, not
+                # something this fix changes or can guarantee against; it
+                # only ensures OUR wait for it ends honestly, as INCONCLUSIVE,
+                # rather than the process crashing outright. See
+                # PIPELINE_FAIL_SAFE_DESIGN.md.
+                outcomes.append({
+                    "target": v["target"], "command": "npm install", "result": "INCONCLUSIVE",
+                    "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
+                    "classification": "INFRASTRUCTURE (dependency install timed out)",
+                    "install_timeout_seconds": npm_install_timeout_seconds,
+                })
+                continue
             if install.returncode != 0:
                 outcomes.append({
                     "target": v["target"], "command": "npm install", "result": "INCONCLUSIVE",
@@ -909,6 +976,7 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                     "stdout_tail": "\n".join(install.stdout.splitlines()[-25:]),
                     "stderr_tail": "\n".join(install.stderr.splitlines()[-25:]),
                     "classification": "INFRASTRUCTURE (dependency install failed)",
+                    "install_timeout_seconds": npm_install_timeout_seconds,
                 })
                 continue
         try:
@@ -1081,6 +1149,8 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
         lines.append(f"  - classification: {o['classification']}")
         if "timeout_seconds" in o:
             lines.append(f"  - timeout allowed: {o['timeout_seconds']}s")
+        if "install_timeout_seconds" in o:
+            lines.append(f"  - install timeout allowed: {o['install_timeout_seconds']}s")
     lines.append("")
     for o in outcomes:
         lines.append(f"<details><summary>{o['target']} test output (tail)</summary>\n\n```\n{o['stdout_tail']}\n{o['stderr_tail']}\n```\n</details>\n")
