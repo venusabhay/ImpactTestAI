@@ -20,6 +20,7 @@ It never modifies your repository. It cannot fix anything, write code, commit, p
    | `target_repo` | Your repository, as `owner/repo` (e.g. `team-a/payment-service`) |
    | `target_ref` | The change to analyze — a branch name, or `refs/pull/123/head` for PR #123 |
    | `base_ref` | What that change is proposed on top of (usually `main`) |
+   | `validation_timeout_seconds` | Optional, defaults to `180`. Leave it unless you have a specific reason not to — see "How long validation is allowed to run" below. |
 
 5. Click **Run workflow**.
 6. When it finishes, open the run and download the artifact — named `run-<run-id>`, e.g. `run-20260828T221501Z-3f9a2c11`. It contains three files:
@@ -65,6 +66,12 @@ The report answers, in order:
 - **It executes your repository's own `npm install`/`npm test`.** Only run this against a repository you'd already trust to run its own CI pipeline — this tool doesn't do anything your CI doesn't already do, but it's worth saying plainly.
 - **It discovers your repository's structure from evidence, not a fixed layout**: any directory with a `package.json` is treated as a component, and any `receiver.method(path, ...)` call (`app.get(...)`, `router.post(...)`, `fastify.get(...)`, or any other identifier) is treated as a route registration, regardless of formatting. It has been proven against several real, differently-structured Node.js/Express-style repositories (Express, Koa, Fastify). It is still Node.js/Express-style-convention specific: a repository using a fundamentally different registration style (e.g. NestJS's decorator routing, Fastify's config-object `.route(...)` convention, or a non-Node language) will honestly report that it found no route-level evidence rather than guess — **that's exactly the kind of thing we want to hear about as pilot feedback**, not something to work around quietly.
 - **A recommendation of "escalate" or "need more validation" is not a failure of the tool.** It means the tool found something it couldn't confidently clear on its own. That's the intended behavior, not a bug to report.
+
+## How long validation is allowed to run
+
+Most repositories can use the default 180-second validation timeout — leave `validation_timeout_seconds` blank and don't think about this section again. For a repository whose *legitimate* test/build suite genuinely takes longer than that (a slow but healthy suite, not a hang), provide a larger value when you run the workflow.
+
+Raising the timeout only changes how long the tool waits for a real result — it does **not** change what counts as a pass or a fail, and it does not make the tool any more or less strict. A validation command that still cannot complete within whatever timeout you selected is reported `INCONCLUSIVE` and still results in `ESCALATE`, exactly as it would at the default — a timeout is never quietly turned into a pass or a fail. If you keep seeing `ESCALATE` with a timeout classification and you're confident your suite is healthy, that's the signal to raise this value; if you're not sure, leave it at the default and treat a timeout report the same as any other escalation.
 
 ## We're not trying to prove this is perfect
 
