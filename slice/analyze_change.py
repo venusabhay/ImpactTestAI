@@ -65,7 +65,18 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.7.0-pilot"
+TOOL_VERSION = "0.8.0-pilot"
+# 0.8.0: --validation-timeout-seconds (default 180, unchanged) replaces the
+# previously hardcoded 180s literal in run_validation()'s subprocess.run()
+# call for the selected validation command -- see
+# slice/VALIDATION_TIMEOUT_PROPOSAL.md. The timeout->INCONCLUSIVE->ESCALATE
+# chain in final_recommendation() is byte-for-byte unchanged; only the
+# numeric threshold is now configurable. Each validation outcome (PASSED,
+# FAILED, or INCONCLUSIVE/timeout) now records the timeout_seconds actually
+# used, surfaced in both audit.json (via the outcome dict) and report.md's
+# VALIDATION RESULT section. No automatic retries, no per-repository
+# configuration, no change to POLICY_VERSION -- no risk/decision rule was
+# touched.
 
 # Version of the rule-based risk/validation policy implemented below.
 # Bump this whenever the rules in build_risk_assessment(), final_recommendation(),
@@ -863,7 +874,7 @@ def build_validation_decision(repo, change, risk, components):
     return {"selected_validations": selected, "rejected_validations": rejected}
 
 
-def run_validation(repo, node_bin_dir, selected, npm_install=False):
+def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_timeout_seconds=180):
     outcomes = []
     env = os.environ.copy()
     if node_bin_dir:
@@ -902,7 +913,8 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False):
                 continue
         try:
             result = subprocess.run(
-                v["command"], cwd=svc_dir, shell=True, capture_output=True, text=True, timeout=180, env=env,
+                v["command"], cwd=svc_dir, shell=True, capture_output=True, text=True,
+                timeout=validation_timeout_seconds, env=env,
             )
             passed = result.returncode == 0
             outcomes.append({
@@ -917,12 +929,14 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False):
                     "Unknown / insufficient evidence -- requires human triage "
                     "(this tool does not auto-classify failure cause)"
                 ),
+                "timeout_seconds": validation_timeout_seconds,
             })
         except subprocess.TimeoutExpired:
             outcomes.append({
                 "target": v["target"], "command": v["command"], "result": "INCONCLUSIVE",
                 "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
                 "classification": "INFRASTRUCTURE (timeout)",
+                "timeout_seconds": validation_timeout_seconds,
             })
     return outcomes
 
@@ -1065,6 +1079,8 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
     for o in outcomes:
         lines.append(f"- `{o['command']}` in `{o['target']}`: **{o['result']}** (exit code {o['exit_code']})")
         lines.append(f"  - classification: {o['classification']}")
+        if "timeout_seconds" in o:
+            lines.append(f"  - timeout allowed: {o['timeout_seconds']}s")
     lines.append("")
     for o in outcomes:
         lines.append(f"<details><summary>{o['target']} test output (tail)</summary>\n\n```\n{o['stdout_tail']}\n{o['stderr_tail']}\n```\n</details>\n")
@@ -1106,6 +1122,12 @@ def main():
                               "<organization>/<repository>/<run_id>/{report.md,audit.json,metadata.json} "
                               "is preserved (Artifact History milestone). Defaults to 'artifacts', relative "
                               "to the current working directory.")
+    parser.add_argument("--validation-timeout-seconds", type=int, default=180,
+                         help="Seconds to allow each selected validation command to run before it is "
+                              "reported INCONCLUSIVE (INFRASTRUCTURE (timeout)) rather than PASSED/FAILED. "
+                              "Default 180, unchanged from prior behavior. A timeout never becomes a pass "
+                              "or a fail -- raising this only gives a genuinely slow but healthy validation "
+                              "command more time to actually complete.")
     args = parser.parse_args()
 
     # Captured before any work begins, for metadata.json's started_at --
@@ -1142,7 +1164,8 @@ def main():
         # inherited PATH as-is, which is correct on a clean machine or CI
         # runner. Only pass --node-bin when the default `node` on PATH is
         # broken or absent.
-        outcomes = run_validation(repo, args.node_bin, validation_decision["selected_validations"], args.npm_install)
+        outcomes = run_validation(repo, args.node_bin, validation_decision["selected_validations"], args.npm_install,
+                                   validation_timeout_seconds=args.validation_timeout_seconds)
 
     recommendation = final_recommendation(risk, outcomes, validation_decision)
 

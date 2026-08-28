@@ -9,7 +9,9 @@ history, real npm test execution) is exercised separately by the fixture
 smoke test in the CI workflow, not here.
 """
 import os
+import subprocess
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import analyze_change as ac  # noqa: E402
@@ -197,3 +199,123 @@ def test_find_callers_skips_bare_root_path(tmp_path):
 def test_find_test_evidence_skips_bare_root_path(tmp_path):
     (tmp_path / "whatever.test.js").write_text("const x = '/anything';\n")
     assert ac.find_test_evidence(str(tmp_path), "/") == []
+
+
+# ---------------------------------------------------------------------------
+# run_validation -- configurable timeout (VALIDATION_TIMEOUT_PROPOSAL.md,
+# Option A: implemented). Written after a real diagnostic against
+# tt-a1i/archify: a healthy, 0-failure, 723-test suite took 338s and was
+# reported ESCALATE purely because it exceeded the then-hardcoded 180s
+# limit. The limit is now a parameter (validation_timeout_seconds, default
+# 180 -- unchanged) instead of a literal, and the timeout actually used is
+# recorded on every outcome. subprocess.run is mocked to raise
+# TimeoutExpired in most of these so timeout handling is exercised
+# deterministically, without waiting 180+ real seconds; one test below
+# (test_explicit_timeout_extension_can_turn_a_timeout_into_a_real_pass)
+# uses a real subprocess deliberately, to prove the threading works
+# end-to-end, not just against a mock.
+# ---------------------------------------------------------------------------
+
+def _selected_validation(command="npm test"):
+    return [{"type": "INTEGRATION_TEST", "target": "component", "target_dir": "component", "command": command}]
+
+
+def test_run_validation_reports_inconclusive_on_timeout(tmp_path):
+    (tmp_path / "component").mkdir()
+    with patch("analyze_change.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="npm test", timeout=180)):
+        outcomes = ac.run_validation(str(tmp_path), "", _selected_validation(), npm_install=False)
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    # The core contract: a timeout is never laundered into a verdict.
+    assert outcome["result"] == "INCONCLUSIVE"
+    assert outcome["result"] not in ("PASSED", "FAILED")
+    assert outcome["exit_code"] is None
+    assert outcome["classification"] == "INFRASTRUCTURE (timeout)"
+
+
+def test_run_validation_default_timeout_is_180_seconds(tmp_path):
+    """The default must remain 180s, per the approved proposal -- this is
+    not a change to behavior, only to how the value reaches subprocess.run
+    (parameter instead of a literal)."""
+    (tmp_path / "component").mkdir()
+    with patch("analyze_change.subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="npm test", timeout=180)
+        ac.run_validation(str(tmp_path), "", _selected_validation(), npm_install=False)
+    _, kwargs = mock_run.call_args
+    assert kwargs["timeout"] == 180
+
+
+def test_run_validation_passes_through_an_explicit_timeout(tmp_path):
+    """An operator-supplied timeout reaches subprocess.run exactly --
+    the whole point of Option A."""
+    (tmp_path / "component").mkdir()
+    with patch("analyze_change.subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="npm test", timeout=600)
+        ac.run_validation(str(tmp_path), "", _selected_validation(), npm_install=False,
+                           validation_timeout_seconds=600)
+    _, kwargs = mock_run.call_args
+    assert kwargs["timeout"] == 600
+
+
+def test_timeout_seconds_recorded_on_both_timeout_and_completed_outcomes(tmp_path):
+    """Every validation outcome -- whether it timed out or actually
+    completed -- records the timeout that was in effect, so a report/audit
+    record is self-describing without reading source code."""
+    (tmp_path / "component").mkdir()
+
+    with patch("analyze_change.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="npm test", timeout=45)):
+        timed_out = ac.run_validation(str(tmp_path), "", _selected_validation(), npm_install=False,
+                                       validation_timeout_seconds=45)
+    assert timed_out[0]["timeout_seconds"] == 45
+
+    completed_result = subprocess.CompletedProcess(args="npm test", returncode=0, stdout="ok\n", stderr="")
+    with patch("analyze_change.subprocess.run", return_value=completed_result):
+        completed = ac.run_validation(str(tmp_path), "", _selected_validation(), npm_install=False,
+                                       validation_timeout_seconds=45)
+    assert completed[0]["result"] == "PASSED"
+    assert completed[0]["timeout_seconds"] == 45
+
+
+def test_timeout_outcome_never_reaches_accept_or_require_additional_validation():
+    """End-to-end contract check: an INCONCLUSIVE/timeout outcome must
+    produce ESCALATE from final_recommendation() regardless of risk level
+    or confidence -- a timeout is not evidence about the change itself,
+    so nothing about the rest of the assessment may override it."""
+    timeout_outcome = [{
+        "target": "component", "command": "npm test", "result": "INCONCLUSIVE",
+        "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
+        "classification": "INFRASTRUCTURE (timeout)", "timeout_seconds": 180,
+    }]
+    for risk_level in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+        for overall_confidence in ("LOW", "MEDIUM", "HIGH"):
+            risk = _risk(risk_level=risk_level, overall_confidence=overall_confidence, direct_test_coverage=True)
+            decision, _ = ac.final_recommendation(risk, timeout_outcome, {"selected_validations": [1]})
+            assert decision == "ESCALATE"
+
+
+# ---------------------------------------------------------------------------
+# Integration-level test: a REAL subprocess (not mocked) that a short
+# default timeout cannot finish within, but an explicitly extended timeout
+# can -- proving the parameter threading works end-to-end, not just
+# against a mock, and directly demonstrating the Archify scenario
+# (a healthy command that is merely slow) at a scale a test suite can run
+# in about a second instead of several minutes.
+# ---------------------------------------------------------------------------
+
+def test_explicit_timeout_extension_can_turn_a_timeout_into_a_real_pass(tmp_path):
+    (tmp_path / "component").mkdir()
+    selected = _selected_validation(command="sleep 1 && exit 0")
+
+    too_short = ac.run_validation(str(tmp_path), "", selected, npm_install=False,
+                                   validation_timeout_seconds=0.2)
+    assert too_short[0]["result"] == "INCONCLUSIVE"
+    assert too_short[0]["classification"] == "INFRASTRUCTURE (timeout)"
+    assert too_short[0]["timeout_seconds"] == 0.2
+
+    long_enough = ac.run_validation(str(tmp_path), "", selected, npm_install=False,
+                                     validation_timeout_seconds=5)
+    assert long_enough[0]["result"] == "PASSED"
+    assert long_enough[0]["exit_code"] == 0
+    assert long_enough[0]["timeout_seconds"] == 5
