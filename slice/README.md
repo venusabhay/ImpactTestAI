@@ -52,15 +52,18 @@ For running the analyzer yourself rather than through the pilot workflow (see `P
 ```bash
 python3 analyze_change.py <path-to-repo> \
   --against HEAD \
-  --github-repo <owner/repo>    # optional, Stage 2: adds real CI run history
-  --npm-install                 # optional: run `npm install` before validation (needed on a fresh checkout)
-  --node-bin <directory>        # optional: only needed if the default `node` on PATH is broken/missing
+  --github-repo <owner/repo>              # optional, Stage 2: adds real CI run history
+  --npm-install                           # optional: run `npm install` before validation (needed on a fresh checkout)
+  --node-bin <directory>                  # optional: only needed if the default `node` on PATH is broken/missing
+  --validation-timeout-seconds <seconds>  # optional, default 180: see below
   --out reports/some-report.md
 ```
 
 Run `python3 analyze_change.py --version` to see the exact tool and policy version. Unit tests live in `tests/` (`python3 -m pytest tests/`); the CI fixture used to smoke-test the whole pipeline is in `fixtures/` (`bash fixtures/setup_fixture.sh`).
 
 The tool only reads the target repository (and, with `--github-repo`, that repository's GitHub Actions run history) and runs its own existing `npm test` — it never modifies, commits, or pushes anything anywhere.
+
+**Validation timeout:** each selected validation command gets `--validation-timeout-seconds` (default **180**, unchanged from prior behavior) to complete. A command that exceeds it is reported `INCONCLUSIVE` (`INFRASTRUCTURE (timeout)`), never guessed at as a pass or a fail — and an `INCONCLUSIVE` outcome still always produces `ESCALATE`, exactly as before. Raising this value only gives a genuinely slow-but-healthy validation command more wall-clock time to actually finish; it does not change what counts as a pass, a fail, or how risk is assessed. The timeout actually used is recorded on every outcome, in both `report.md` and `audit.json`, so a report is self-describing without reading source code. See [`VALIDATION_TIMEOUT_PROPOSAL.md`](VALIDATION_TIMEOUT_PROPOSAL.md) and [`VALIDATION_TIMEOUT_DISPOSITION.md`](VALIDATION_TIMEOUT_DISPOSITION.md) for the design comparison and implementation review — including the real diagnostic (an external repository whose healthy test suite legitimately took longer than the old fixed limit) that motivated making this configurable. That diagnostic is evidence for why the timeout needed to be configurable; it is not a special case in the analyzer, which has no repository-specific behavior anywhere.
 
 ## Stage 2 — adding one operational data source (CI/test-run history)
 
