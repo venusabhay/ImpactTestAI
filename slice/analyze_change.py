@@ -66,7 +66,30 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.10.0-pilot"
+TOOL_VERSION = "0.11.0-pilot"
+# 0.11.0 (route-label composition, no policy change): find_route_registrations()
+# reported a route's bare, in-file literal path only ("/", "/emojis"), with
+# no awareness that its defining file could itself be mounted under a
+# prefix elsewhere (app.use('/api/v1', api)), possibly transitively --
+# found, via a fresh pilot round, to collapse 3 real, distinct routes to
+# an identical "GET /" label in one real repository, and (same root
+# cause) to make a route's own real, passing test coverage invisible,
+# since test-evidence matching searches for the route's uncomposed
+# literal path. discovery.py gains build_mount_map()/compose_route_path()
+# (and their helpers) to compose a route's effective, externally-visible
+# path from receiver.use(prefix, target) mount registrations, resolved
+# the same way find_middleware_usages() already resolves a middleware
+# argument to the file it refers to -- reused, not a new discovery
+# technique. Applied in build_impact_assessment() only, at the point a
+# route dict is turned into report evidence; find_route_registrations()
+# and find_middleware_usages() themselves are unchanged, so a route
+# registered directly (not mounted) is completely unaffected. This
+# changes what the impact/test-evidence EVIDENCE says (more accurate
+# route labels, more accurate test-coverage credit) -- it does not
+# change risk scoring, confidence-formula logic, service/component
+# discovery, or final_recommendation(); POLICY_VERSION is unchanged. See
+# pilot/reports/2026-08-29-product-validation-pilot.md (Case 2) and
+# docs/decisions/PRODUCT_VALIDATION_GAP_DISPOSITION.md.
 # 0.10.0 (generic CI workflow discovery, no policy/discovery change):
 # fetch_ci_history() matched runs against a single hardcoded exact path,
 # ".github/workflows/ci.yml" -- measured, on 10 real repositories, to hide
@@ -478,6 +501,12 @@ def _impact_for_route(repo, components, route, defining_path, defining_service,
 def build_impact_assessment(repo, change, components):
     affected_entities = []
     uncertainty_sources = []
+    # Route-label composition: computed once per run (not once per changed
+    # file) and used to turn a route's bare, in-file literal path into its
+    # effective, externally-visible one when the defining file is itself
+    # mounted under a prefix elsewhere, possibly transitively. See
+    # discovery.build_mount_map()/compose_route_path().
+    mount_map = discovery.build_mount_map(repo)
 
     for path in change["changed_files"]:
         full_path = os.path.join(repo, path)
@@ -489,6 +518,8 @@ def build_impact_assessment(repo, change, components):
         service = discovery.component_for_path(path, components)
         touched_ranges = changed_line_ranges(change["diff_text_u0"], path)
         handlers = discovery.find_route_registrations(file_text)
+        for h in handlers:
+            h["path"] = discovery.compose_route_path(mount_map, path, h["path"])
 
         any_relationship_found = False
 
@@ -522,6 +553,7 @@ def build_impact_assessment(repo, change, components):
         seen_routes = set()
         for u in usages:
             route = u["route"]
+            route["path"] = discovery.compose_route_path(mount_map, u["file"], route["path"])
             key = (u["file"], route["path"], route["method"])
             if key in seen_routes:
                 continue
