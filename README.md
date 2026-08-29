@@ -6,6 +6,8 @@ A change-risk intelligence and validation decision platform: given a code change
 
 **Start with [`PILOT.md`](PILOT.md).** It's a short, non-technical guide — you don't need anything below this line to use it. After you've run it a few times, please fill out [`pilot/PILOT_FEEDBACK_TEMPLATE.md`](pilot/PILOT_FEEDBACK_TEMPLATE.md).
 
+**If you want to know what ImpactTestAI promises (and explicitly does not promise) before relying on it**, see [`docs/PRODUCT_VALIDATION_SPEC.md`](docs/PRODUCT_VALIDATION_SPEC.md) — the product contract, including what evidence justifies each outcome it can report.
+
 ## Repository layout
 
 - [`slice/`](slice/) — the implementation: the analyzer (`analyze_change.py`), its test suite, and CI fixtures. This is the only part most people need to read.

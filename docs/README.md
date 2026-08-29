@@ -5,6 +5,12 @@ Engineering history and reasoning — not product usage documentation
 and [`PILOT.md`](../PILOT.md)) and not pilot evidence (that's
 [`pilot/`](../pilot/README.md)).
 
+- **[`PRODUCT_VALIDATION_SPEC.md`](PRODUCT_VALIDATION_SPEC.md)** — the
+  current product contract: what ImpactTestAI promises, what it
+  explicitly does not, what evidence justifies each outcome it can
+  report, and how to measure whether a pilot round found it useful.
+  Start here if you want to know what the tool is supposed to do before
+  digging into why any specific piece of it works the way it does.
 - **[`design/`](design/)** — the sequential architecture/domain-contract
   narrative (`business-vision.md`, `design1.md`–`design9.md`) that shaped
   the platform before and during implementation. Historical; later
