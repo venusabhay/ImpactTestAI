@@ -565,3 +565,207 @@ def test_ci_history_crash_produces_a_renderable_report_and_never_fabricates():
     assert "confirmed CI job failure" not in report
     audit_record = {"ci_history": ci_history, "risk": risk, "recommendation": {"decision": recommendation[0]}}
     json.dumps(audit_record)
+
+
+# ---------------------------------------------------------------------------
+# fetch_ci_history -- generic workflow-path discovery (see
+# slice/CI_WORKFLOW_DISCOVERY_INVESTIGATION.md). Prior behavior matched
+# only the single exact path ".github/workflows/ci.yml"; measured against
+# 10 real repositories to hide real, retrievable CI history on any repo
+# using a different filename. Now matches any path starting with
+# ".github/workflows/" (real, repository-authored workflow files), still
+# excluding GitHub-managed "dynamic/..." runs (Dependabot, CodeQL,
+# Copilot, Pages) surfaced through the same API. No filename allowlist;
+# no per-repository special case.
+# ---------------------------------------------------------------------------
+
+def _runs_data(entries):
+    """entries: list of (run_id, path) tuples, all reported as completed."""
+    return {
+        "workflow_runs": [
+            {
+                "id": run_id, "path": path, "status": "completed",
+                "created_at": "2026-01-01T00:00:00Z",
+                "url": f"https://api.github.com/run/{run_id}",
+                "html_url": f"https://x/{run_id}",
+            }
+            for run_id, path in entries
+        ]
+    }
+
+
+def _jobs_response(job_name, conclusion="success"):
+    return {"jobs": [{"name": job_name, "conclusion": conclusion}]}
+
+
+def test_fetch_ci_history_still_accepts_the_original_ci_yml_path():
+    runs = _runs_data([(1, ".github/workflows/ci.yml")])
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url == "https://api.github.com/run/1/jobs":
+            return _jobs_response("Test (myservice)")
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["runs_examined"] == 1
+    assert record["service_successes"] == 1
+
+
+def test_fetch_ci_history_accepts_a_differently_named_workflow_file():
+    """The originally-reported gap: a repo whose real CI workflow is
+    named something other than ci.yml (here, node.js.yml -- matching the
+    real saisilinus/node-express-mongoose-typescript-boilerplate case
+    from the prior pilot round) must no longer be invisible."""
+    runs = _runs_data([(1, ".github/workflows/node.js.yml")])
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url == "https://api.github.com/run/1/jobs":
+            return _jobs_response("Test (myservice)")
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["runs_examined"] == 1
+    assert record["service_successes"] == 1
+
+
+def test_fetch_ci_history_accepts_an_arbitrary_other_workflow_filename():
+    """No filename allowlist: an unrelated, never-seen-before real
+    workflow filename is accepted purely because of where it lives."""
+    runs = _runs_data([(1, ".github/workflows/build-and-verify.yml")])
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url == "https://api.github.com/run/1/jobs":
+            return _jobs_response("Test (myservice)")
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["runs_examined"] == 1
+    assert record["service_successes"] == 1
+
+
+def test_fetch_ci_history_excludes_github_managed_dynamic_paths():
+    """dynamic/... runs (Dependabot, CodeQL, Copilot, Pages) are not
+    repository-authored workflows and must not be treated as CI history,
+    even though they come back from the same API call. If the analyzer
+    incorrectly fetched job detail for the dynamic run, the side_effect
+    below would raise."""
+    runs = _runs_data([
+        (1, "dynamic/dependabot/dependabot-updates"),
+        (2, ".github/workflows/ci.yml"),
+    ])
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url == "https://api.github.com/run/2/jobs":
+            return _jobs_response("Test (myservice)")
+        raise AssertionError(f"should not fetch job detail for a dynamic/ path: {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["runs_examined"] == 1  # only the real workflow run, not the dynamic one
+    assert record["service_successes"] == 1
+
+
+def test_fetch_ci_history_job_matching_unchanged_under_a_non_ci_yml_path():
+    """The existing job-name-vs-service discrimination (prefer a job
+    whose name signals an actual test run over one that merely mentions
+    the service, e.g. a Docker build) must behave identically regardless
+    of which real workflow filename the jobs came from."""
+    runs = _runs_data([(1, ".github/workflows/node.js.yml")])
+    jobs = {"jobs": [
+        {"name": "Docker Build Test (myservice)", "conclusion": "success"},
+        {"name": "Test (myservice)", "conclusion": "failure"},
+    ]}
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url == "https://api.github.com/run/1/jobs":
+            return jobs
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    # The Docker job is excluded even though it mentions the service by name;
+    # only the real test-named job is counted.
+    assert len(record["service_job_results"]) == 1
+    assert record["service_job_results"][0]["job_name"] == "Test (myservice)"
+    assert record["service_failures"] == 1
+    assert record["service_successes"] == 0
+
+
+def test_fetch_ci_history_zero_usable_runs_is_still_honest_insufficient_evidence():
+    """A repo with only GitHub-managed runs (no repository-authored
+    workflow at all) must report the same honest 'insufficient evidence'
+    signal as a repo with literally zero runs -- not a fabricated clean
+    result and not a crash."""
+    runs = _runs_data([(1, "dynamic/github-code-scanning/codeql")])
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        raise AssertionError(f"should not fetch job detail for a dynamic/ path: {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["available"] is True
+    assert record["runs_examined"] == 0
+    assert record["service_job_results"] == []
+    assert "UNKNOWN / insufficient evidence" in record["historical_signal"]
+
+
+def test_fetch_ci_history_retrieval_failure_still_produces_unknown_not_a_crash():
+    """Confirms the 0.9.0 fail-safe behavior is untouched by this change:
+    a transient retrieval failure is still UNKNOWN, not a crash and not
+    fabricated history, regardless of which workflow path would have
+    matched."""
+    with patch("analyze_change._gh_api_get", side_effect=http.client.IncompleteRead(b"partial")):
+        record = ac.fetch_ci_history("owner/repo", "myservice")
+    assert record["available"] is False
+    assert record["historical_signal"] == "UNKNOWN / insufficient evidence"
+    assert record["service_job_results"] == []
+
+
+def test_fetch_ci_history_regression_fixture_saisilinus_shape():
+    """Regression fixture modeled on the real failure mode found in the
+    prior pilot round: saisilinus/node-express-mongoose-typescript-
+    boilerplate's real CI workflow is .github/workflows/node.js.yml, and
+    the same repo's real /actions/runs response mixes in a much larger
+    number of GitHub-managed dependabot-update entries (37 dynamic
+    entries vs. 16 real node.js.yml runs, in the real data). Confirms the
+    real workflow's runs are found despite being outnumbered by unrelated
+    dynamic runs, and that a job matching the service name inside them is
+    discovered -- this is the exact scenario that was previously
+    invisible."""
+    entries = [(i, "dynamic/dependabot/dependabot-updates") for i in range(1, 38)]
+    node_ci_run_ids = list(range(1000, 1016))
+    entries += [(run_id, ".github/workflows/node.js.yml") for run_id in node_ci_run_ids]
+    runs = _runs_data(entries)
+    node_ci_job_urls = {f"https://api.github.com/run/{run_id}/jobs" for run_id in node_ci_run_ids}
+
+    def side_effect(url, timeout=15):
+        if "actions/runs?per_page=" in url:
+            return runs
+        if url in node_ci_job_urls:
+            return _jobs_response("Test (node-express-mongoose-typescript-boilerplate)")
+        raise AssertionError(f"should not fetch job detail for a dynamic/ path: {url}")
+
+    with patch("analyze_change._gh_api_get", side_effect=side_effect):
+        record = ac.fetch_ci_history(
+            "saisilinus/node-express-mongoose-typescript-boilerplate",
+            "node-express-mongoose-typescript-boilerplate",
+        )
+    assert record["runs_examined"] == 16  # only the real workflow's runs, not the 37 dependabot entries
+    assert record["service_successes"] == 16
+    assert record["service_failures"] == 0
+    assert "No confirmed CI job failures" in record["historical_signal"]

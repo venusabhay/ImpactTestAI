@@ -66,7 +66,23 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.9.0-pilot"
+TOOL_VERSION = "0.10.0-pilot"
+# 0.10.0 (generic CI workflow discovery, no policy/discovery change):
+# fetch_ci_history() matched runs against a single hardcoded exact path,
+# ".github/workflows/ci.yml" -- measured, on 10 real repositories, to hide
+# real CI history on any repo using a different filename (e.g.
+# "node.js.yml"), 3 of 10 sampled. Replaced with a generic prefix check,
+# r.get("path", "").startswith(".github/workflows/"), which accepts any
+# repository-authored workflow file and still excludes GitHub-managed
+# "dynamic/..." runs (Dependabot, CodeQL, Copilot, Pages) -- a platform-
+# level distinction, not a filename list or per-repository rule. The
+# existing job-name-vs-service matching, which does the actual
+# discrimination, is unchanged. Does not address the separate, deferred
+# "window crowd-out" finding (a real workflow's runs can still be pushed
+# out of the 100-most-recent-runs fetch by higher-frequency sibling
+# workflows in the same repo, observed on socketio/socket.io) -- see
+# slice/CI_WORKFLOW_DISCOVERY_INVESTIGATION.md. POLICY_VERSION is
+# unchanged.
 # 0.9.0 (pipeline fail-safe, no policy/discovery change): two evidence-
 # gathering code paths could previously crash the entire process with no
 # report.md/audit.json produced at all -- found by real pilot runs, not
@@ -699,9 +715,23 @@ _CI_HISTORY_TRANSIENT_ERRORS = (
 )
 
 
-def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.yml", per_page=100, timeout=15):
-    """Fetch this repository's real GitHub Actions run history for the CI
-    workflow, and extract job-level outcomes relevant to `service`.
+def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/", per_page=100, timeout=15):
+    """Fetch this repository's real GitHub Actions run history and extract
+    job-level outcomes relevant to `service`.
+
+    `workflow_path` is a prefix, not one exact filename: any run whose
+    path starts with it is a candidate (default: every repository-authored
+    workflow, since real workflow files always live under
+    `.github/workflows/`). GitHub-managed runs surfaced through this same
+    API -- Dependabot updates, CodeQL's default setup, Copilot's PR
+    reviewer/agent, Pages deployments -- come back with a `dynamic/...`
+    path instead and are excluded by this prefix, not by name. This
+    replaces an earlier version that matched only the single exact path
+    `.github/workflows/ci.yml`, which measurably hid real CI history on
+    repositories using a different filename (e.g. `node.js.yml`) -- see
+    slice/CI_WORKFLOW_DISCOVERY_INVESTIGATION.md. The existing job-name-vs-
+    service matching below is unchanged and does the real discrimination;
+    widening this prefix only changes which runs reach it.
 
     Never fabricates a result: on any network/API failure, or if no
     matching job is found, the record says so explicitly (UNKNOWN /
@@ -739,7 +769,7 @@ def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.y
 
     runs = [
         r for r in runs_data.get("workflow_runs", [])
-        if r.get("path") == workflow_path and r.get("status") == "completed"
+        if r.get("path", "").startswith(workflow_path) and r.get("status") == "completed"
     ]
     record["runs_examined"] = len(runs)
     if runs:
@@ -819,7 +849,7 @@ def fetch_ci_history(github_repo, service, workflow_path=".github/workflows/ci.y
         "measured probability of future failure."
     )
     record["limitations"].append(
-        f"Only {record['runs_examined']} workflow run(s) on `{workflow_path}` were examined, spanning "
+        f"Only {record['runs_examined']} workflow run(s) under `{workflow_path}` were examined, spanning "
         f"{record['window_start']} to {record['window_end']} -- too small and too recent a sample to support "
         f"any calibrated statistic."
     )
@@ -1097,7 +1127,7 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
             if not hist["available"]:
                 lines.append(f"- CI history: **UNKNOWN / insufficient evidence** ({hist['error']})\n")
                 continue
-            lines.append(f"- Source: {hist['source']} (`{hist['repo']}`, workflow `{hist['workflow_path']}`)")
+            lines.append(f"- Source: {hist['source']} (`{hist['repo']}`, workflows under `{hist['workflow_path']}`)")
             lines.append(f"- Runs examined: {hist['runs_examined']} "
                          f"(window: {hist['window_start']} to {hist['window_end']})")
             lines.append(f"- Relevant job history for `{svc}`: {len(hist['service_job_results'])} run(s) matched -- "
