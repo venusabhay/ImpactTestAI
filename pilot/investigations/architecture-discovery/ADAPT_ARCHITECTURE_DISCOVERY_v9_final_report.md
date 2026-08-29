@@ -2,7 +2,7 @@
 
 **Branch:** `feature/adapt-architecture-discovery` (not merged to `main`)
 **Freeze commit:** `8eb4cae`
-**Design (written before implementation):** [`slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md`](../../ROUTE_DISCOVERY_MULTILINE_DESIGN.md)
+**Design (written before implementation):** [`docs/decisions/ROUTE_DISCOVERY_MULTILINE_DESIGN.md`](../../../docs/decisions/ROUTE_DISCOVERY_MULTILINE_DESIGN.md)
 
 ---
 

@@ -9,7 +9,7 @@ calling convention (any receiver name), and a new capability -- middleware/
 dependency discovery -- that finds files used as middleware by routes
 defined elsewhere, via exported-name usage rather than a specific filename.
 
-Scope boundary (see slice/ARCHITECTURE_DISCOVERY_DESIGN.md): Node.js
+Scope boundary (see docs/decisions/ARCHITECTURE_DISCOVERY_DESIGN.md): Node.js
 repositories using an Express-style calling convention. Regex/text-based,
 not a real parser -- disclosed false-negative risk on dynamic or
 unconventional route registration is expected and reported, not
@@ -191,7 +191,7 @@ def find_route_registrations(file_text):
     is captured but never constrained -- it is a per-file styling choice
     (app/router/server/fastify/...), not architectural evidence.
 
-    Two independent steps (see slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md):
+    Two independent steps (see docs/decisions/ROUTE_DISCOVERY_MULTILINE_DESIGN.md):
     find the call site with a narrow regex matching only
     `receiver.method(` (guaranteed to be on one line in practice), then
     read its arguments via the general-purpose, string-aware

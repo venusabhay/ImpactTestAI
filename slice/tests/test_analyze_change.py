@@ -325,7 +325,7 @@ def test_explicit_timeout_extension_can_turn_a_timeout_into_a_real_pass(tmp_path
 
 # ---------------------------------------------------------------------------
 # run_validation -- npm install failure handling (see
-# slice/PIPELINE_FAIL_SAFE_DESIGN.md, written after two real pilot crashes:
+# docs/decisions/PIPELINE_FAIL_SAFE_DESIGN.md, written after two real pilot crashes:
 # an unhandled subprocess.TimeoutExpired from "npm install" itself, and an
 # unhandled http.client.IncompleteRead from CI-history fetching -- both
 # previously took the whole process down with no report.md/audit.json
@@ -471,7 +471,7 @@ def test_npm_install_timeout_produces_a_renderable_report_and_audit_record():
 
 # ---------------------------------------------------------------------------
 # fetch_ci_history -- transient network/HTTP failure handling (see
-# slice/PIPELINE_FAIL_SAFE_DESIGN.md). _gh_api_get is mocked so
+# docs/decisions/PIPELINE_FAIL_SAFE_DESIGN.md). _gh_api_get is mocked so
 # IncompleteRead and connection failures are exercised deterministically,
 # without a real network dependency.
 # ---------------------------------------------------------------------------

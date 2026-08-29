@@ -4,7 +4,8 @@ __pycache__/
 .pytest_cache/
 
 # CI smoke-test / pilot-run output -- generated, not part of the curated
-# demonstration record in slice/reports/.
+# pilot evidence in pilot/. slice/reports/ is intentionally near-empty;
+# see slice/reports/README.md.
 slice/reports/pilot-*.md
 slice/reports/pilot-*.audit.json
 
@@ -12,6 +13,8 @@ slice/reports/pilot-*.audit.json
 # metadata.json, under artifacts/<organization>/<repository>/<run_id>/.
 # Preserved via GitHub Actions' own artifact storage (see
 # .github/workflows/run-analysis.yml), not by committing to this repo --
-# keeps ad-hoc/local/CI runs from accumulating as repo bloat.
-artifacts/
+# keeps ad-hoc/local/CI runs from accumulating as repo bloat. The README
+# explaining this directory's purpose is the one exception kept in git.
+artifacts/*
+!artifacts/README.md
 slice/artifacts/

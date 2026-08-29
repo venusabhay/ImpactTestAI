@@ -1,0 +1,32 @@
+Fetching CI history for service 'create-nodejs-ts-app' from saisilinus/node-express-mongoose-typescript-boilerplate...
+Traceback (most recent call last):
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/http/client.py", line 603, in _read_chunked
+    value.append(self._safe_read(chunk_left))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/http/client.py", line 644, in _safe_read
+    raise IncompleteRead(data, amt-len(data))
+http.client.IncompleteRead: IncompleteRead(35612 bytes read, 15709 more expected)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 1227, in <module>
+    main()
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 1159, in main
+    ci_history[svc] = fetch_ci_history(args.github_repo, svc)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 692, in fetch_ci_history
+    runs_data = _gh_api_get(
+                ^^^^^^^^^^^^
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 661, in _gh_api_get
+    return json.load(resp)
+           ^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+                 ^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/http/client.py", line 473, in read
+    return self._read_chunked(amt)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/http/client.py", line 609, in _read_chunked
+    raise IncompleteRead(b''.join(value)) from exc
+http.client.IncompleteRead: IncompleteRead(819200 bytes read)

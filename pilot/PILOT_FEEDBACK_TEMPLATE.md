@@ -36,4 +36,4 @@ Fill in one row per run of the pilot (or one row summarizing your team's overall
 
 ## Anything else
 
-Anything that surprised you, confused you, or that you think we should know — including if the tool's assumptions about your repository's structure didn't match reality (see "Important things to know" in [PILOT.md](PILOT.md)). We want the honest result, including "this didn't help" or "this got it wrong" — that's exactly what this pilot is for.
+Anything that surprised you, confused you, or that you think we should know — including if the tool's assumptions about your repository's structure didn't match reality (see "Important things to know" in [PILOT.md](../PILOT.md)). We want the honest result, including "this didn't help" or "this got it wrong" — that's exactly what this pilot is for.
