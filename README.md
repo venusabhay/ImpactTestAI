@@ -8,6 +8,8 @@ A change-risk intelligence and validation decision platform: given a code change
 
 **If you want to know what ImpactTestAI promises (and explicitly does not promise) before relying on it**, see [`docs/PRODUCT_VALIDATION_SPEC.md`](docs/PRODUCT_VALIDATION_SPEC.md) — the product contract, including what evidence justifies each outcome it can report.
 
+**If you're picking up engineering on this project**, start with [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md) — the current repository state, completed milestones, deferred findings, and the one next action, before consulting anything else.
+
 ## Repository layout
 
 - [`slice/`](slice/) — the implementation: the analyzer (`analyze_change.py`), its test suite, and CI fixtures. This is the only part most people need to read.

@@ -5,6 +5,11 @@ Engineering history and reasoning — not product usage documentation
 and [`PILOT.md`](../PILOT.md)) and not pilot evidence (that's
 [`pilot/`](../pilot/README.md)).
 
+- **[`PROJECT_STATE.md`](PROJECT_STATE.md)** — the compact, current
+  operational handoff: repository state, product definition, completed
+  milestones, deferred findings, and the single next action. **A new
+  engineering session should read this first**, before anything else in
+  this directory.
 - **[`PRODUCT_VALIDATION_SPEC.md`](PRODUCT_VALIDATION_SPEC.md)** — the
   current product contract: what ImpactTestAI promises, what it
   explicitly does not, what evidence justifies each outcome it can
