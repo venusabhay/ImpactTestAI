@@ -2,7 +2,7 @@
 
 **Branch:** `feature/artifact-history` (pushed to `origin`, **not merged to `main`** — awaiting business review, per instruction)
 **Implementation commit SHA:** `24fbb6e`
-**Design (written before implementation):** [`slice/ARTIFACT_HISTORY_DESIGN.md`](../ARTIFACT_HISTORY_DESIGN.md)
+**Design (written before implementation):** [`docs/decisions/ARTIFACT_HISTORY_DESIGN.md`](../../docs/decisions/ARTIFACT_HISTORY_DESIGN.md)
 
 ---
 

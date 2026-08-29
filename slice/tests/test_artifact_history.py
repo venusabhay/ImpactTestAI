@@ -1,6 +1,6 @@
 """
 History validation tests for the Artifact History & Reproducibility
-milestone (see slice/ARTIFACT_HISTORY_DESIGN.md).
+milestone (see docs/decisions/ARTIFACT_HISTORY_DESIGN.md).
 
 Two layers:
   - Unit tests against artifact_history.py directly (run_id generation,

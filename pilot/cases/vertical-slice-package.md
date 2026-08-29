@@ -2,7 +2,7 @@
 
 > ## STATUS: Stage 2B — Officially Accepted (historical milestone record)
 >
-> Work continued well beyond the "Stage 3 decision" this banner originally awaited — through Stage 2C, `ADAPT_ARCHITECTURE_DISCOVERY` (v5–v9, `PASS`), and `ARTIFACT_HISTORY` (accepted), both now merged to `main`. See [`../README.md`](../README.md) for current status. This document's content below is preserved unchanged as the accurate record of the Stage 2B milestone specifically.
+> Work continued well beyond the "Stage 3 decision" this banner originally awaited — through Stage 2C, `ADAPT_ARCHITECTURE_DISCOVERY` (v5–v9, `PASS`), and `ARTIFACT_HISTORY` (accepted), both now merged to `main`. See [`slice/README.md`](../../slice/README.md) for current status. This document's content below is preserved unchanged as the accurate record of the Stage 2B milestone specifically.
 >
 > **Milestone statement:** the vertical slice successfully identified a validation gap, selected a validation that exercised the real affected behavior, and uncovered a genuine authorization regression introduced by the change. The system correctly escalated the failed validation rather than allowing the change to proceed.
 >

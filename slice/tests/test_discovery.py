@@ -132,7 +132,7 @@ def test_end_line_matches_closing_brace():
 # find the call site with a narrow regex matching only `receiver.method(`,
 # then read its arguments via the existing general-purpose
 # _extract_balanced()/_split_top_level() helpers, which work identically
-# regardless of line breaks. See slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md.
+# regardless of line breaks. See docs/decisions/ROUTE_DISCOVERY_MULTILINE_DESIGN.md.
 # ---------------------------------------------------------------------------
 
 def test_single_line_route_still_detected():

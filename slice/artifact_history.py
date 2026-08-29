@@ -2,7 +2,7 @@
 Artifact history: preserves every ImpactTestAI execution as an immutable,
 independently traceable historical record.
 
-Scope (see slice/ARTIFACT_HISTORY_DESIGN.md): run identity, artifact
+Scope (see docs/decisions/ARTIFACT_HISTORY_DESIGN.md): run identity, artifact
 storage/layout, and cross-artifact consistency only. Does not touch
 design8.md, design9.md, the risk/decision policy, or architecture
 discovery -- this module has no knowledge of RiskAssessment, probability,

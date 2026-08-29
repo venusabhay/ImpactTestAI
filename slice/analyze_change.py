@@ -106,11 +106,11 @@ TOOL_VERSION = "0.10.0-pilot"
 # the surrounding machinery was already correct once the exception reaches
 # it. Neither fix touches probability, risk_level, confidence, CI-evidence
 # weighting, or any decision rule; POLICY_VERSION is unchanged. See
-# slice/PIPELINE_FAIL_SAFE_DESIGN.md.
+# docs/decisions/PIPELINE_FAIL_SAFE_DESIGN.md.
 # 0.8.0: --validation-timeout-seconds (default 180, unchanged) replaces the
 # previously hardcoded 180s literal in run_validation()'s subprocess.run()
 # call for the selected validation command -- see
-# slice/VALIDATION_TIMEOUT_PROPOSAL.md. The timeout->INCONCLUSIVE->ESCALATE
+# docs/decisions/VALIDATION_TIMEOUT_PROPOSAL.md. The timeout->INCONCLUSIVE->ESCALATE
 # chain in final_recommendation() is byte-for-byte unchanged; only the
 # numeric threshold is now configurable. Each validation outcome (PASSED,
 # FAILED, or INCONCLUSIVE/timeout) now records the timeout_seconds actually
@@ -151,7 +151,7 @@ TOOL_VERSION = "0.10.0-pilot"
 #       is estimated -- probability remains UNKNOWN per v2/v3.
 #   v5 (ADAPT_ARCHITECTURE_DISCOVERY): replaces hardcoded services/<name>/
 #       and app.METHOD()-only discovery with evidence-based discovery (see
-#       discovery.py and slice/ARCHITECTURE_DISCOVERY_DESIGN.md): components
+#       discovery.py and docs/decisions/ARCHITECTURE_DISCOVERY_DESIGN.md): components
 #       are discovered from package.json presence at any depth; routes are
 #       discovered from any receiver.method(path, ...) call, not only
 #       `app.`; a new evidence category (MIDDLEWARE_DEPENDENCY) finds files
@@ -217,7 +217,7 @@ TOOL_VERSION = "0.10.0-pilot"
 #       silently missing any call formatted with the path on a following
 #       line (measured 0/9 and 7/21 real routes detected in two held-out
 #       repositories before this fix). Replaced with two independent
-#       steps, see discovery.py and slice/ROUTE_DISCOVERY_MULTILINE_DESIGN.md:
+#       steps, see discovery.py and docs/decisions/ROUTE_DISCOVERY_MULTILINE_DESIGN.md:
 #       (1) a narrow regex finds only `receiver.method(` -- the part
 #       guaranteed to be on one line in practice; (2) the existing general-
 #       purpose _extract_balanced()/_split_top_level() helpers (already
@@ -546,7 +546,7 @@ def build_impact_assessment(repo, change, components):
         if not any_relationship_found:
             uncertainty_sources.append(
                 f"No route or middleware relationship was discovered for {path} -- this may be a file "
-                f"outside this analyzer's discovery scope (see slice/ARCHITECTURE_DISCOVERY_DESIGN.md), "
+                f"outside this analyzer's discovery scope (see docs/decisions/ARCHITECTURE_DISCOVERY_DESIGN.md), "
                 f"not necessarily a file with no real impact."
             )
 
@@ -1231,7 +1231,7 @@ def main():
     args = parser.parse_args()
 
     # Captured before any work begins, for metadata.json's started_at --
-    # see slice/ARTIFACT_HISTORY_DESIGN.md.
+    # see docs/decisions/ARTIFACT_HISTORY_DESIGN.md.
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = artifact_history.generate_run_id()
 
@@ -1295,7 +1295,7 @@ def main():
     # Artifact History milestone: every execution ALSO gets an immutable,
     # independently traceable historical record -- never overwritten, never
     # deduplicated even for identical inputs. See
-    # slice/ARTIFACT_HISTORY_DESIGN.md. Separate from --out (which remains
+    # docs/decisions/ARTIFACT_HISTORY_DESIGN.md. Separate from --out (which remains
     # exactly as before, for direct/ad-hoc use) so existing callers are
     # unaffected.
     organization, repository, repository_url = artifact_history.resolve_identity(repo, args.github_repo)

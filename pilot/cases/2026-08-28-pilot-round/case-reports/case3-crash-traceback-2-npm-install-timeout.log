@@ -1,0 +1,21 @@
+Fetching CI history for service 'node-express-mongoose-typescript-boilerplate' from saisilinus/node-express-mongoose-typescript-boilerplate...
+Traceback (most recent call last):
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 1227, in <module>
+    main()
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 1167, in main
+    outcomes = run_validation(repo, args.node_bin, validation_decision["selected_validations"], args.npm_install,
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/git-venusabhay/ImpactTestAI/slice/analyze_change.py", line 902, in run_validation
+    install = subprocess.run(
+              ^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/Users/abhay/.pyenv/versions/3.12.10/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command 'npm install' timed out after 300 seconds
