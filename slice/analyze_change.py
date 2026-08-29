@@ -66,7 +66,30 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.11.0-pilot"
+TOOL_VERSION = "0.12.0-pilot"
+# 0.12.0 (workspace-aware validation installation, no policy change):
+# run_validation()'s "npm install" ran only inside the changed component's
+# own directory -- found, via a fresh pilot round, to leave devDependencies
+# an npm/Yarn workspace hoists to its root (e.g. a shared formatter)
+# unavailable, producing a misleading "command not found" FAILED result
+# (socketio/socket.io's socket.io-parser package: exit 127, "prettier:
+# command not found") before the real test ever ran. discovery.py gains
+# find_workspace_root(), which checks the standard, package-manager-level
+# "workspaces" field in an ancestor package.json (the same field npm and
+# Yarn both read) to determine whether the component is a declared
+# workspace member -- not a heuristic, not repository-specific, and
+# returns None (falling back to installing inside the component alone,
+# exactly as before) for any repository, or any component, where this
+# doesn't apply. Only the INSTALL command's cwd changes when a workspace
+# is detected; the validation/test command itself is unchanged, still run
+# from the component's own directory -- Node's own module resolution
+# finds a hoisted dependency once it's actually installed at the
+# workspace root. pnpm's separate pnpm-workspace.yaml convention is a
+# disclosed, out-of-scope boundary. Does not touch risk scoring,
+# confidence, service/component discovery, route-label composition, or
+# final_recommendation(); POLICY_VERSION is unchanged. See
+# docs/decisions/WORKSPACE_AWARE_INSTALL_DESIGN.md and
+# pilot/reports/2026-08-29-product-validation-pilot.md (Case 3).
 # 0.11.0 (route-label composition, no policy change): find_route_registrations()
 # reported a route's bare, in-file literal path only ("/", "/emojis"), with
 # no awareness that its defining file could itself be mounted under a
@@ -1002,6 +1025,7 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             # 'npm test' invocation). Its result is reflected there.
             continue
         svc_dir = os.path.join(repo, v["target_dir"])
+        workspace_root = None
         if npm_install:
             # A fresh checkout (e.g. in CI) has no node_modules. This is an
             # execution-environment concern, not a decision-policy one --
@@ -1009,9 +1033,27 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             # judged, only whether the command can run at all. Off by
             # default so Stage 1/2/2B's exact prior behavior (dependencies
             # installed manually beforehand) is unaffected.
+            #
+            # Workspace-aware install: if this component is a declared
+            # member of an npm/Yarn workspace (an ancestor package.json's
+            # "workspaces" field lists it -- see discovery.find_workspace_root()),
+            # install AT THAT WORKSPACE ROOT instead of inside the
+            # component alone. Real pilot evidence: installing only inside
+            # a workspace member can leave devDependencies the repository
+            # itself hoists to the root (e.g. a shared formatter/linter)
+            # unavailable, producing a misleading "command not found"
+            # FAILED result before the real test ever runs. Only the
+            # INSTALL command's cwd changes; the validation/test command
+            # itself still runs from svc_dir, unchanged -- Node's own
+            # module resolution walks up parent directories to find a
+            # hoisted dependency once it's actually installed there. When
+            # no workspace is detected, install_dir == svc_dir and this
+            # is a no-op: byte-for-byte the prior behavior.
+            workspace_root = discovery.find_workspace_root(repo, v["target_dir"])
+            install_dir = os.path.normpath(os.path.join(repo, workspace_root)) if workspace_root is not None else svc_dir
             try:
                 install = subprocess.run(
-                    "npm install", cwd=svc_dir, shell=True, capture_output=True, text=True,
+                    "npm install", cwd=install_dir, shell=True, capture_output=True, text=True,
                     timeout=npm_install_timeout_seconds, env=env,
                 )
             except subprocess.TimeoutExpired:
@@ -1024,22 +1066,28 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                 # only ensures OUR wait for it ends honestly, as INCONCLUSIVE,
                 # rather than the process crashing outright. See
                 # PIPELINE_FAIL_SAFE_DESIGN.md.
-                outcomes.append({
+                outcome = {
                     "target": v["target"], "command": "npm install", "result": "INCONCLUSIVE",
                     "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
                     "classification": "INFRASTRUCTURE (dependency install timed out)",
                     "install_timeout_seconds": npm_install_timeout_seconds,
-                })
+                }
+                if workspace_root is not None:
+                    outcome["install_workspace_root"] = workspace_root or "."
+                outcomes.append(outcome)
                 continue
             if install.returncode != 0:
-                outcomes.append({
+                outcome = {
                     "target": v["target"], "command": "npm install", "result": "INCONCLUSIVE",
                     "exit_code": install.returncode,
                     "stdout_tail": "\n".join(install.stdout.splitlines()[-25:]),
                     "stderr_tail": "\n".join(install.stderr.splitlines()[-25:]),
                     "classification": "INFRASTRUCTURE (dependency install failed)",
                     "install_timeout_seconds": npm_install_timeout_seconds,
-                })
+                }
+                if workspace_root is not None:
+                    outcome["install_workspace_root"] = workspace_root or "."
+                outcomes.append(outcome)
                 continue
         try:
             result = subprocess.run(
@@ -1047,7 +1095,7 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                 timeout=validation_timeout_seconds, env=env,
             )
             passed = result.returncode == 0
-            outcomes.append({
+            outcome = {
                 "target": v["target"],
                 "command": v["command"],
                 "result": "PASSED" if passed else "FAILED",
@@ -1060,14 +1108,20 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                     "(this tool does not auto-classify failure cause)"
                 ),
                 "timeout_seconds": validation_timeout_seconds,
-            })
+            }
+            if workspace_root is not None:
+                outcome["install_workspace_root"] = workspace_root or "."
+            outcomes.append(outcome)
         except subprocess.TimeoutExpired:
-            outcomes.append({
+            outcome = {
                 "target": v["target"], "command": v["command"], "result": "INCONCLUSIVE",
                 "exit_code": None, "stdout_tail": "", "stderr_tail": "timed out",
                 "classification": "INFRASTRUCTURE (timeout)",
                 "timeout_seconds": validation_timeout_seconds,
-            })
+            }
+            if workspace_root is not None:
+                outcome["install_workspace_root"] = workspace_root or "."
+            outcomes.append(outcome)
     return outcomes
 
 
@@ -1213,6 +1267,8 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
             lines.append(f"  - timeout allowed: {o['timeout_seconds']}s")
         if "install_timeout_seconds" in o:
             lines.append(f"  - install timeout allowed: {o['install_timeout_seconds']}s")
+        if "install_workspace_root" in o:
+            lines.append(f"  - install ran at workspace root: `{o['install_workspace_root']}`")
     lines.append("")
     for o in outcomes:
         lines.append(f"<details><summary>{o['target']} test output (tail)</summary>\n\n```\n{o['stdout_tail']}\n{o['stderr_tail']}\n```\n</details>\n")

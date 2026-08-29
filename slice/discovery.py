@@ -17,6 +17,7 @@ special-cased around.
 
 Contains NO reference to any specific repository, filename, or route path.
 """
+import fnmatch
 import json
 import os
 import re
@@ -154,6 +155,100 @@ def component_root_dir(name, components):
         if c["name"] == name:
             return c["root_dir"]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Workspace-root detection (workspace-aware validation installation
+# milestone) -- see docs/decisions/WORKSPACE_AWARE_INSTALL_DESIGN.md.
+#
+# A component installed with `npm install` run only inside its own
+# directory can fail on tooling the repository actually hoists to a
+# workspace root (real pilot evidence: socketio/socket.io's
+# socket.io-parser package failed with "prettier: command not found"
+# before any real test ran, because prettier is a root-level
+# devDependency npm workspaces hoists). This uses the standard,
+# package-manager-level "workspaces" field in an ancestor package.json
+# -- the same field npm and Yarn (classic and berry) both read -- not a
+# heuristic and not specific to any repository. pnpm's separate
+# pnpm-workspace.yaml convention is a disclosed, out-of-scope boundary,
+# not silently ignored.
+# ---------------------------------------------------------------------------
+
+def _workspace_patterns(workspaces_field):
+    """Normalizes a root package.json's "workspaces" field -- a bare
+    list of glob patterns (the common, and npm's only supported, shape),
+    or Yarn classic's equivalent {"packages": [...], "nohoist": [...]}
+    object form -- into a plain list of pattern strings. Any other shape
+    (including the field being absent) yields [] -- ambiguous/unsupported
+    metadata is treated as "no workspace here," never guessed at."""
+    if isinstance(workspaces_field, list):
+        return [p for p in workspaces_field if isinstance(p, str)]
+    if isinstance(workspaces_field, dict) and isinstance(workspaces_field.get("packages"), list):
+        return [p for p in workspaces_field["packages"] if isinstance(p, str)]
+    return []
+
+
+def _matches_workspace_pattern(rel_dir, pattern):
+    """One npm/Yarn workspace glob pattern (e.g. "packages/*", or an
+    exact member path with no wildcard at all, as in socketio/socket.io's
+    own package.json) matched against a path relative to the workspace
+    root -- segment-by-segment, so "*" matches exactly one path segment,
+    not an arbitrary number of them the way Python's fnmatch would let it
+    cross "/". Recursive "**" patterns are not supported here -- a
+    disclosed, narrow limitation, not silently guessed at."""
+    if "**" in pattern:
+        return False
+    rel_parts = rel_dir.split("/")
+    pat_parts = pattern.rstrip("/").split("/")
+    if len(rel_parts) != len(pat_parts):
+        return False
+    return all(fnmatch.fnmatchcase(r, p) for r, p in zip(rel_parts, pat_parts))
+
+
+def find_workspace_root(repo, component_root_dir):
+    """Is `component_root_dir` (repo-relative; "" for the repo root
+    itself) a declared member of an npm/Yarn workspace rooted at some
+    ancestor directory? Walks upward from its parent, skipping any
+    ancestor package.json that doesn't declare a "workspaces" field at
+    all (an ordinary, non-root package -- the normal shape of every
+    member of a real workspace), and stops at the first one that does,
+    checking whether this component's path (relative to that ancestor)
+    actually matches one of its declared patterns.
+
+    Returns the workspace root's repo-relative directory ("" for the
+    repo root itself) if `component_root_dir` is a genuine declared
+    member; None otherwise -- covering both "no workspace exists
+    anywhere above this component" and "a workspace root exists but
+    doesn't declare this component" identically, since both mean the
+    same thing for installation purposes: there is nothing here to
+    safely redirect to, so fall back to installing at the component's
+    own directory exactly as before this capability existed. Never
+    walks above `repo`, and never guesses past the nearest ancestor that
+    does declare "workspaces" -- if that one doesn't list this
+    component, no further, more distant ancestor is consulted."""
+    if not component_root_dir:
+        return None  # the component IS the repo root; no ancestor to find
+    current = os.path.dirname(component_root_dir.rstrip("/"))
+    while True:
+        pkg_path = os.path.join(repo, current, "package.json") if current else os.path.join(repo, "package.json")
+        if os.path.isfile(pkg_path):
+            try:
+                with open(pkg_path, "r", errors="ignore") as f:
+                    pkg = json.load(f)
+            except (OSError, ValueError):
+                pkg = {}
+            if "workspaces" in pkg:
+                patterns = _workspace_patterns(pkg.get("workspaces"))
+                rel = (
+                    os.path.relpath(component_root_dir, current).replace("\\", "/")
+                    if current else component_root_dir
+                )
+                if any(_matches_workspace_pattern(rel, p) for p in patterns):
+                    return current
+                return None
+        if current == "":
+            return None
+        current = os.path.dirname(current)
 
 
 # ---------------------------------------------------------------------------

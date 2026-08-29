@@ -722,3 +722,89 @@ def test_es_module_default_import_mount_is_resolved(tmp_path):
     _write(tmp_path / "api.js", "router.get('/', handler);\n")
     mount_map = discovery.build_mount_map(str(tmp_path))
     assert mount_map == {"api.js": {"prefix": "/api/v1", "parent": "app.js"}}
+
+
+# ---------------------------------------------------------------------------
+# Workspace-root detection (workspace-aware validation installation
+# milestone) -- see docs/decisions/WORKSPACE_AWARE_INSTALL_DESIGN.md and
+# pilot/reports/2026-08-29-product-validation-pilot.md, Case 3.
+# ---------------------------------------------------------------------------
+
+def test_no_workspace_field_at_all_is_not_treated_as_a_workspace(tmp_path):
+    """Negative/safety case: an ordinary, non-workspace repository (no
+    ancestor package.json declares "workspaces" at all) must not be
+    incorrectly treated as one."""
+    _write(tmp_path / "package.json", json.dumps({"name": "plain-app"}))
+    _write(tmp_path / "component" / "package.json", json.dumps({"name": "component"}))
+    assert discovery.find_workspace_root(str(tmp_path), "component") is None
+
+
+def test_workspace_root_detected_via_exact_member_path(tmp_path):
+    """Real shape: socketio/socket.io's own root package.json lists each
+    member as an exact path, not a wildcard (e.g.
+    "packages/socket.io-parser"), no glob at all."""
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"name": "monorepo", "workspaces": ["packages/socket.io-parser", "packages/other"]}),
+    )
+    _write(tmp_path / "packages" / "socket.io-parser" / "package.json", json.dumps({"name": "socket.io-parser"}))
+    root = discovery.find_workspace_root(str(tmp_path), "packages/socket.io-parser")
+    assert root == ""  # "" is the repo root itself
+
+
+def test_workspace_root_detected_via_wildcard_pattern(tmp_path):
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    _write(tmp_path / "packages" / "widgets" / "package.json", json.dumps({"name": "widgets"}))
+    assert discovery.find_workspace_root(str(tmp_path), "packages/widgets") == ""
+
+
+def test_yarn_classic_object_form_workspaces_field_is_supported(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"name": "monorepo", "workspaces": {"packages": ["packages/*"], "nohoist": ["**/react"]}}),
+    )
+    _write(tmp_path / "packages" / "widgets" / "package.json", json.dumps({"name": "widgets"}))
+    assert discovery.find_workspace_root(str(tmp_path), "packages/widgets") == ""
+
+
+def test_workspace_exists_but_does_not_declare_this_component(tmp_path):
+    """Ambiguous/unsupported case: a workspace root exists, but its
+    declared patterns don't actually list this component -- must not be
+    guessed at as a member anyway."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    _write(tmp_path / "apps" / "standalone" / "package.json", json.dumps({"name": "standalone"}))
+    assert discovery.find_workspace_root(str(tmp_path), "apps/standalone") is None
+
+
+def test_wildcard_pattern_does_not_cross_a_path_segment(tmp_path):
+    """"packages/*" must match exactly one path segment beneath
+    packages/, not an arbitrary number the way Python's own fnmatch
+    would let "*" cross "/"."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    _write(tmp_path / "packages" / "widgets" / "nested" / "package.json", json.dumps({"name": "nested"}))
+    assert discovery.find_workspace_root(str(tmp_path), "packages/widgets/nested") is None
+
+
+def test_repo_root_component_has_no_workspace_ancestor(tmp_path):
+    """A component that IS the repo root has no ancestor to find --
+    covered explicitly rather than relying on the walk to fail safely."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    assert discovery.find_workspace_root(str(tmp_path), "") is None
+
+
+def test_intermediate_package_json_without_workspaces_field_is_skipped(tmp_path):
+    """A component nested under an intermediate directory that has its
+    OWN package.json (but no "workspaces" field -- the normal shape of
+    an ordinary package) must not stop the walk before it reaches the
+    real workspace root further up."""
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"name": "monorepo", "workspaces": ["groups/team-a/packages/*"]}),
+    )
+    _write(tmp_path / "groups" / "team-a" / "package.json", json.dumps({"name": "team-a", "private": True}))
+    _write(
+        tmp_path / "groups" / "team-a" / "packages" / "widgets" / "package.json",
+        json.dumps({"name": "widgets"}),
+    )
+    root = discovery.find_workspace_root(str(tmp_path), "groups/team-a/packages/widgets")
+    assert root == ""
