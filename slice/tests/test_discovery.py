@@ -596,3 +596,129 @@ def test_extract_balanced_handles_braces_inside_strings():
     open_idx = text.index("{")
     body = discovery._extract_balanced(text, open_idx)
     assert body == ' msg: "a { b", real '
+
+
+# ---------------------------------------------------------------------------
+# Mount-prefix composition (route-label composition milestone) -- see
+# pilot/reports/2026-08-29-product-validation-pilot.md, Case 2, and
+# docs/decisions/PRODUCT_VALIDATION_GAP_DISPOSITION.md. Requirement 7
+# (existing impact/test matching keeps working with the composed route)
+# and the full regression fixture live in tests/test_analyze_change.py,
+# alongside the analyze_change.py machinery they need.
+# ---------------------------------------------------------------------------
+
+def test_unmounted_file_route_path_is_unchanged(tmp_path):
+    """Requirement 1: a route registered directly (its defining file is
+    not mounted anywhere) is completely unaffected -- existing behavior,
+    preserved exactly."""
+    _write(tmp_path / "app.js", "app.get('/users', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map == {}
+    assert discovery.compose_route_path(mount_map, "app.js", "/users") == "/users"
+
+
+def test_root_route_composes_under_mount_without_added_trailing_slash(tmp_path):
+    """Requirement 2: router.get("/", ...) mounted at /api/v1 composes
+    to the prefix itself. No trailing slash is added for a root route --
+    this matches real Express mount semantics (mounting a router's own
+    "/" at a prefix serves that prefix exactly) and is required for
+    find_test_evidence()/find_callers() to actually match a real test's
+    request path, which never contains one."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1', api);\n")
+    _write(tmp_path / "api.js", "router.get('/', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map == {"api.js": {"prefix": "/api/v1", "parent": "app.js"}}
+    assert discovery.compose_route_path(mount_map, "api.js", "/") == "/api/v1"
+
+
+def test_non_root_route_composes_under_mount(tmp_path):
+    """Requirement 3: router.get("/emojis", ...) mounted at /api/v1
+    composes to /api/v1/emojis."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1', api);\n")
+    _write(tmp_path / "api.js", "router.get('/emojis', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert discovery.compose_route_path(mount_map, "api.js", "/emojis") == "/api/v1/emojis"
+
+
+def test_multiple_routes_under_the_same_mount(tmp_path):
+    """Requirement 4: several routes in the same mounted file each
+    compose correctly against the same mount."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1', api);\n")
+    _write(
+        tmp_path / "api.js",
+        "router.get('/', handler);\n"
+        "router.post('/widgets', create);\n"
+        "router.delete('/widgets/:id', remove);\n",
+    )
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    with open(tmp_path / "api.js") as f:
+        routes = discovery.find_route_registrations(f.read())
+    composed = {r["method"]: discovery.compose_route_path(mount_map, "api.js", r["path"]) for r in routes}
+    assert composed == {
+        "GET": "/api/v1",
+        "POST": "/api/v1/widgets",
+        "DELETE": "/api/v1/widgets/:id",
+    }
+
+
+def test_nested_router_mounts_compose_transitively(tmp_path):
+    """Requirement 5: nested router mounts -- emojis.js mounted at
+    /emojis under api.js, which is itself mounted at /api/v1 under
+    app.js. This is the exact real pilot shape (app.js -> api/index.js
+    -> api/emojis.js)."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1', api);\n")
+    _write(
+        tmp_path / "api.js",
+        "const emojis = require('./emojis.js');\n"
+        "router.get('/', handler);\n"
+        "router.use('/emojis', emojis);\n",
+    )
+    _write(tmp_path / "emojis.js", "router.get('/', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map["emojis.js"] == {"prefix": "/emojis", "parent": "api.js"}
+    assert mount_map["api.js"] == {"prefix": "/api/v1", "parent": "app.js"}
+    assert discovery.compose_route_path(mount_map, "emojis.js", "/") == "/api/v1/emojis"
+
+
+def test_mount_prefix_trailing_slash_normalizes_the_same_as_without(tmp_path):
+    """Requirement 6: a mount prefix written with a trailing slash
+    (app.use('/api/v1/', api)) composes identically to one without."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1/', api);\n")
+    _write(tmp_path / "api.js", "router.get('/emojis', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert discovery.compose_route_path(mount_map, "api.js", "/emojis") == "/api/v1/emojis"
+
+
+def test_use_without_a_path_argument_is_not_treated_as_a_mount(tmp_path):
+    """A path-less app.use(middleware) has no prefix to compose and must
+    not be mistaken for a mount -- only receiver.use(pathString, target)
+    counts."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use(api);\n")
+    _write(tmp_path / "api.js", "router.get('/', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map == {}
+
+
+def test_mount_target_with_a_dotted_filename_convention_resolves(tmp_path):
+    """Regression: Express's own common `name.route.js` naming convention
+    (also `name.controller.js`, `name.service.js`, ...) means the
+    specifier "./auth.route" looks, to a naive os.path.splitext() check,
+    like it already has a real extension (".route") -- it doesn't. Found
+    via real-world verification against
+    hagopj13/node-express-boilerplate, where this silently broke
+    resolution of `require('./auth.route')` before being fixed."""
+    _write(tmp_path / "app.js", "const auth = require('./auth.route');\napp.use('/auth', auth);\n")
+    _write(tmp_path / "auth.route.js", "router.post('/login', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map == {"auth.route.js": {"prefix": "/auth", "parent": "app.js"}}
+    assert discovery.compose_route_path(mount_map, "auth.route.js", "/login") == "/auth/login"
+
+
+def test_es_module_default_import_mount_is_resolved(tmp_path):
+    """The real pilot repository uses ES module syntax (`import X from
+    './y.js'`), not just CommonJS require() -- both must resolve a
+    mount's target to the file it refers to."""
+    _write(tmp_path / "app.js", "import api from './api.js';\napp.use('/api/v1', api);\n")
+    _write(tmp_path / "api.js", "router.get('/', handler);\n")
+    mount_map = discovery.build_mount_map(str(tmp_path))
+    assert mount_map == {"api.js": {"prefix": "/api/v1", "parent": "app.js"}}

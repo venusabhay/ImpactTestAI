@@ -515,3 +515,211 @@ def find_middleware_usages(repo, changed_path, changed_text):
                 if matched:
                     usages.append({"route": reg, "file": rel, "used_names": sorted(matched)})
     return usages
+
+
+# ---------------------------------------------------------------------------
+# 4. Mount-prefix composition (route-label composition milestone)
+#
+# find_route_registrations() reports a route's bare, in-file literal path
+# only -- "/", "/emojis" -- with no awareness that the file defining it may
+# itself be mounted under a prefix elsewhere (`app.use('/api/v1', api)`),
+# possibly transitively (api/index.js mounted at /api/v1, itself mounting
+# emojis.js at /emojis). Real pilot evidence: three distinct real routes
+# collapsed to an identical "GET /" label, and the same root cause made a
+# route's own real, passing test coverage invisible, because test-evidence
+# matching searches for the route's (uncomposed) literal path -- see
+# pilot/reports/2026-08-29-product-validation-pilot.md, Case 2.
+#
+# This reuses find_route_registrations()'s own building blocks
+# (_extract_balanced/_split_top_level for call arguments, _PATH_ARG_RE and
+# _IDENTIFIER_ARG_RE for argument shape) applied to receiver.use(prefix,
+# target) instead of receiver.method(path, ...) -- not a new discovery
+# technique, the same one aimed at a mount instead of a route. Resolving a
+# mount's target to the file it refers to reuses the same "is this local
+# name bound to a whole-module import of some file" question
+# _whole_module_import_aliases() already answers for middleware
+# arguments, generalized to any relative import target instead of one
+# already-known changed file.
+# ---------------------------------------------------------------------------
+
+MOUNT_METHOD_RE = re.compile(r"\b(\w+)\.use\(")
+
+
+def find_mount_registrations(file_text):
+    """Finds receiver.use(prefix, target) calls -- a MOUNT, not a route:
+    it registers everything beneath `prefix` on whatever router/middleware
+    `target` refers to, rather than handling `prefix` itself. Only a
+    `.use(` call whose FIRST argument is a `/`-prefixed string literal
+    counts: a path-less `app.use(someMiddleware)` has no prefix to
+    compose and is not treated as a mount. Remaining arguments are kept
+    if they're bare-identifier/property-chain shaped (the same filter
+    route middleware arguments use, via _middleware_args_from_call) --
+    real code sometimes chains local middleware before the router
+    (`app.use('/api', authGuard, apiRouter)`), so more than one
+    candidate can come back; the caller tries each until one resolves.
+    Comment-aware, like find_route_registrations()."""
+    file_text = strip_comments(file_text)
+    mounts = []
+    for m in MOUNT_METHOD_RE.finditer(file_text):
+        open_idx = m.end() - 1
+        call_args_text = _extract_balanced(file_text, open_idx, "(", ")")
+        if call_args_text is None:
+            continue
+        args = _split_top_level(call_args_text)
+        if len(args) < 2:
+            continue  # no path argument -- not a mount by this definition
+        path_match = _PATH_ARG_RE.fullmatch(args[0].strip())
+        if not path_match:
+            continue
+        candidates = _middleware_args_from_call(args[1:])
+        if not candidates:
+            continue
+        mounts.append({"prefix": path_match.group(1), "candidates": candidates})
+    return mounts
+
+
+def _import_bindings(file_text):
+    """Local variable names in `file_text` bound to a WHOLE-MODULE
+    import/require of some file via a RELATIVE path (starting with `.`)
+    -- generalizes _whole_module_import_aliases() (scoped to one
+    already-known target file) to record every such binding, keyed by
+    local name, since a mount's target can refer to any file, not one
+    known in advance. Same three forms, same exclusion of named imports,
+    for the same reason: only a whole-module binding tells us the local
+    name IS a specific other file, rather than one of its exports."""
+    file_text = strip_comments(file_text)
+    bindings = {}
+    for m in re.finditer(
+        r"""(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\(\s*['"](\.[^'"]*)['"]\s*\)""",
+        file_text,
+    ):
+        bindings[m.group(1)] = m.group(2)
+    for m in re.finditer(
+        r"""import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*['"](\.[^'"]*)['"]""",
+        file_text,
+    ):
+        bindings[m.group(1)] = m.group(2)
+    for m in re.finditer(
+        r"""import\s*\*\s*as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*from\s*['"](\.[^'"]*)['"]""",
+        file_text,
+    ):
+        bindings[m.group(1)] = m.group(2)
+    return bindings
+
+
+def _resolve_relative_import_target(repo, from_file, specifier):
+    """Resolves a relative import specifier (e.g. "./api/index.js",
+    "../middleware/auth", "./auth.route") used in `from_file`
+    (repo-relative) to an actual repo-relative file path, trying each
+    known source extension and an index-file fallback for a
+    directory-style import -- the two common ways a specifier omits
+    detail present on disk. Returns None if nothing on disk matches;
+    never guesses at a target.
+
+    Deliberately does NOT use os.path.splitext() to decide whether the
+    specifier "already has an extension": Express's own common
+    `name.route.js`/`name.controller.js`/`name.service.js` file-naming
+    convention means splitext("auth.route") returns ("auth", ".route"),
+    which looks like it already has an extension and isn't one -- found
+    via real-world verification against hagopj13/node-express-boilerplate,
+    whose `require('./auth.route')` this would otherwise silently fail
+    to resolve. is_source_file() checks against the actual known
+    extension list instead."""
+    base = os.path.normpath(os.path.join(os.path.dirname(from_file), specifier)).replace("\\", "/")
+    if is_source_file(base) and os.path.isfile(os.path.join(repo, base)):
+        return base
+    candidates = [base + ext for ext in SOURCE_EXTENSIONS]
+    candidates += [f"{base}/index{ext}" for ext in SOURCE_EXTENSIONS]
+    for cand in candidates:
+        if os.path.isfile(os.path.join(repo, cand)):
+            return cand
+    return None
+
+
+def build_mount_map(repo):
+    """Repo-wide: for every file mounted under a prefix by some OTHER
+    file via receiver.use(prefix, target) -- where `target` resolves,
+    through an ordinary relative import/require in the mounting file, to
+    that file -- records {prefix, parent}. Walked once per analysis run
+    (not once per changed file) and passed to compose_route_path().
+    First mount found wins if a file is (unusually) mounted in more than
+    one place; not otherwise disambiguated -- a disclosed simplification,
+    not a silent one."""
+    mounted_by = {}
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS)
+        for fn in sorted(filenames):
+            if not is_source_file(fn):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, repo).replace("\\", "/")
+            try:
+                with open(full, "r", errors="ignore") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            mounts = find_mount_registrations(text)
+            if not mounts:
+                continue
+            bindings = _import_bindings(text)
+            for mount in mounts:
+                for candidate in mount["candidates"]:
+                    root = candidate.split(".", 1)[0]
+                    specifier = bindings.get(root)
+                    if not specifier:
+                        continue
+                    target = _resolve_relative_import_target(repo, rel, specifier)
+                    if not target or target == rel:
+                        continue
+                    if target not in mounted_by:
+                        mounted_by[target] = {"prefix": mount["prefix"], "parent": rel}
+                    break
+    return mounted_by
+
+
+_MAX_MOUNT_DEPTH = 25  # defensive cycle/depth guard, not a framework-specific limit
+
+
+def effective_mount_prefix(mount_map, file_path):
+    """Composes the full, externally-visible path prefix for `file_path`
+    by walking its mount chain leaf-to-root: if some file mounts it under
+    a prefix, and that mounting file is itself mounted elsewhere, and so
+    on, transitively. Returns "" if the file isn't mounted anywhere --
+    the common case, and exactly the existing behavior for a route
+    registered directly (see compose_route_path()). Depth/cycle-guarded
+    against malformed input, not a domain-specific limit."""
+    prefix = ""
+    current = file_path
+    seen = set()
+    depth = 0
+    while current in mount_map and current not in seen and depth < _MAX_MOUNT_DEPTH:
+        seen.add(current)
+        entry = mount_map[current]
+        prefix = entry["prefix"].rstrip("/") + prefix
+        current = entry["parent"]
+        depth += 1
+    return re.sub(r"/+", "/", prefix) if prefix else ""
+
+
+def compose_route_path(mount_map, file_path, literal_path):
+    """The effective, externally-visible path for a route registered
+    with `literal_path` in `file_path`: `literal_path` unchanged if the
+    file isn't mounted anywhere (existing behavior, preserved exactly),
+    otherwise the composed mount prefix concatenated with it (e.g.
+    prefix "/api/v1" + path "/emojis" -> "/api/v1/emojis").
+
+    A bare root path ("/") composes to the prefix itself, with no added
+    trailing slash (prefix "/api/v1" + path "/" -> "/api/v1", not
+    "/api/v1/") -- matching real Express mount semantics (mounting a
+    router's own "/" at a prefix serves that prefix exactly, not
+    prefix+"/"), and required for find_test_evidence()/find_callers()'s
+    substring search to actually match a real test's request path
+    (`.get("/api/v1")` never contains a trailing slash) -- confirmed
+    against the real repository this milestone's fixture is modeled on."""
+    prefix = effective_mount_prefix(mount_map, file_path)
+    if not prefix:
+        return literal_path
+    if literal_path == "/":
+        return prefix
+    combined = prefix.rstrip("/") + literal_path
+    return re.sub(r"/+", "/", combined)

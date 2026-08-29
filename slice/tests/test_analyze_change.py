@@ -769,3 +769,97 @@ def test_fetch_ci_history_regression_fixture_saisilinus_shape():
     assert record["service_successes"] == 16
     assert record["service_failures"] == 0
     assert "No confirmed CI job failures" in record["historical_signal"]
+
+
+# ---------------------------------------------------------------------------
+# Route-label composition (see pilot/reports/2026-08-29-product-validation-pilot.md,
+# Case 2, and docs/decisions/PRODUCT_VALIDATION_GAP_DISPOSITION.md). Mechanism-
+# level coverage (mount detection, prefix composition, nesting, slash
+# normalization) lives in tests/test_discovery.py; these two tests cover
+# requirement 7 (existing impact/test matching keeps working with the
+# composed route) and the regression fixture modeled on the real pilot
+# failure, both of which need analyze_change.py's own machinery
+# (find_test_evidence(), build_impact_assessment()), not discovery.py alone.
+# ---------------------------------------------------------------------------
+
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def _diff_text_for_whole_files(file_line_counts):
+    """A minimal unified-diff-shaped diff_text_u0 marking every line of
+    each given file as touched -- enough for build_impact_assessment()'s
+    overlap check, without constructing a real git diff."""
+    lines = []
+    for path, count in file_line_counts.items():
+        lines.append(f"+++ b/{path}")
+        lines.append(f"@@ -1,{count} +1,{count} @@")
+    return "\n".join(lines) + "\n"
+
+
+def test_composed_route_path_feeds_correctly_into_test_evidence_matching(tmp_path):
+    """Requirement 7: a test file that calls the real, composed URL is
+    found via find_test_evidence() using the composed path -- where the
+    bare, uncomposed literal path ("/") is guarded against entirely as
+    too generic to search for (analyze_change.py's own existing,
+    unchanged robustness guard). This is the exact mechanism that fixed
+    Case 2's under-credited test coverage."""
+    _write(tmp_path / "app.js", "const api = require('./api.js');\napp.use('/api/v1', api);\n")
+    _write(tmp_path / "api.js", "router.get('/', handler);\n")
+    _write(tmp_path / "test/api.test.js", "request(app).get('/api/v1');\n")
+
+    mount_map = ac.discovery.build_mount_map(str(tmp_path))
+    composed = ac.discovery.compose_route_path(mount_map, "api.js", "/")
+    assert composed == "/api/v1"
+
+    hits = ac.find_test_evidence(str(tmp_path), composed)
+    assert len(hits) == 1
+    assert hits[0]["file"] == "test/api.test.js"
+    # The guard on the bare literal path is untouched by this milestone:
+    assert ac.find_test_evidence(str(tmp_path), "/") == []
+
+
+def test_route_label_composition_regression_fixture_matches_real_pilot_case(tmp_path):
+    """Regression fixture modeled on the real pilot failure
+    (w3cj/express-api-starter, commit 0f9e38d): three distinct real
+    routes -- GET / in app.js, GET / in api/index.js (mounted at
+    /api/v1), and GET / in api/emojis.js (mounted at /emojis under
+    api/index.js, itself mounted at /api/v1) -- previously all rendered
+    as an identical "GET /" label. Confirms they are now distinct."""
+    app_js = (
+        "const api = require('./api/index.js');\n"
+        "app.get('/', (req, res) => res.json({ ok: true }));\n"
+        "app.use('/api/v1', api);\n"
+    )
+    api_index_js = (
+        "const emojis = require('./emojis.js');\n"
+        "router.get('/', (req, res) => res.json({ ok: true }));\n"
+        "router.use('/emojis', emojis);\n"
+    )
+    emojis_js = "router.get('/', (req, res) => res.json(['a']));\n"
+
+    _write(tmp_path / "app.js", app_js)
+    _write(tmp_path / "api/index.js", api_index_js)
+    _write(tmp_path / "api/emojis.js", emojis_js)
+    _write(tmp_path / "package.json", '{"name": "fixture-app"}')
+
+    components = ac.discovery.find_components(str(tmp_path))
+    changed_files = ["app.js", "api/index.js", "api/emojis.js"]
+    diff_text_u0 = _diff_text_for_whole_files({
+        "app.js": len(app_js.splitlines()),
+        "api/index.js": len(api_index_js.splitlines()),
+        "api/emojis.js": len(emojis_js.splitlines()),
+    })
+    change = {"changed_files": changed_files, "diff_text_u0": diff_text_u0}
+
+    impact = ac.build_impact_assessment(str(tmp_path), change, components)
+    direct = [e for e in impact["affected_entities"] if e["impact_type"] == "DIRECT"]
+    entities = sorted(e["entity"] for e in direct)
+
+    assert len(entities) == 3
+    assert len(set(entities)) == 3  # no longer collapsed to an identical "GET /"
+    assert any(e.endswith("GET /") for e in entities)
+    assert any(e.endswith("GET /api/v1") for e in entities)
+    assert any(e.endswith("GET /api/v1/emojis") for e in entities)
