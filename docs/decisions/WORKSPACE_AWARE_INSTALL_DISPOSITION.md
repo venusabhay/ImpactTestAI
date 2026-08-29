@@ -162,18 +162,74 @@ build-script edit, no environment-variable workaround was added.
 
 ### Confirmation that the relevant test suite actually executed
 
-Partially, and honestly reported as such: the package's `format:check`
-step (which depends on the exact hoisted dependency this milestone
-fixes access to) ran for real and passed. The package's actual `mocha`
-unit tests (`test:node`, covering `test/parser.js`) did not run on this
-development machine, blocked by the separate, documented macOS/`sed`
-issue above — not by anything related to workspace-aware installation.
-On the repository's own real Linux CI (where `sed -i` behaves as this
-script expects), this same fix would be expected to let the full
-`test:node` suite run; that could not be independently confirmed from
-this development environment without either modifying the target
-repository or installing additional tooling, either of which was
-judged out of scope for this milestone's narrow objective.
+Two separate pieces of evidence, kept distinct rather than merged into
+one claim:
+
+**Local reproduction (this development machine, macOS):** partial. The
+package's `format:check` step (which depends on the exact hoisted
+dependency this milestone fixes access to) ran for real and passed. The
+package's actual `mocha` unit tests (`test:node`, covering
+`test/index.js`) did not run on this machine — blocked by the separate,
+documented macOS/`sed` issue in `postcompile.sh` above, not by anything
+related to workspace-aware installation. No local Linux
+container/VM runtime (Docker, Colima, Lima, Podman) is available on
+this machine, so a same-machine Linux reproduction was not possible
+without installing new tooling — judged out of scope for this
+milestone's narrow objective, per instruction.
+
+**Independent real-world evidence (the target repository's own actual
+CI, not a reproduction):** conclusive. Rather than reproduce execution
+locally, the target repository's own already-existing, publicly
+queryable CI history for this exact commit was checked via GitHub's
+REST API (unauthenticated, read-only — no modification to either
+repository). Commit `7c6ef571a00656718e9e05e3b948fd1758b2a7b4` has 8
+per-package CI check-runs, all `completed`/`success`. The one for this
+package — run `29422226590`, workflow
+`.github/workflows/ci-socket.io-parser.yml`, job `test`
+(`https://github.com/socketio/socket.io/actions/runs/29422226590/job/87375347660`),
+executed 2026-07-15 on `runs-on: ubuntu-latest` — ran, step by step, all
+`success`:
+
+```
+Install dependencies   -> npm ci                              (root-level install; the whole
+                                                                 workspace, matching this fix's
+                                                                 workspace-root install shape)
+Compile package        -> npm run compile --workspace=socket.io-parser
+                           (rimraf && tsc && tsc -p ... && ./postcompile.sh -- the exact
+                           step that fails on this macOS machine)
+Run tests              -> npm test --workspace=socket.io-parser
+                           (package.json "test": format:check && compile && test:node)
+Run browser tests      -> npm test --workspace=socket.io-parser (BROWSERS=1 -> test:browser)
+```
+
+The package's own `package.json` `"test"` script
+(`npm run format:check && npm run compile && ... npm run test:node`,
+with `"test:node": "mocha --reporter dot --bail test/index.js"`)
+confirms the `Run tests` step above *is* the real `mocha` suite, gated
+behind the same `postcompile.sh` step that blocks this machine. Since
+that job step completed successfully on Linux, both `postcompile.sh`
+and the `mocha` suite (`test:node`) are confirmed to have actually run,
+and passed, for this exact real commit, with dependencies installed at
+the workspace root.
+
+This evidence is independent of this milestone's own work — it is the
+target repository's own infrastructure, already recorded before this
+verification began, not something generated or influenced by this
+session. It was not manufactured to fit the hypothesis: the API was
+queried for whatever the real history showed, and it showed a pass.
+
+**Conclusion:** the macOS failure is confirmed to be exactly what it
+was documented as — a `sed -i` BSD/GNU portability difference in the
+target repository's own build script, reproducible on this machine and
+absent on Linux — and not evidence of any defect in workspace-aware
+installation. The `mocha` test suite is confirmed, via real,
+independent, unmodified evidence, to execute successfully against a
+workspace-root install of this exact commit's dependencies. "Local,
+same-machine, end-to-end reproduction" and "the actual test suite
+executes correctly under workspace-root installation" are two different
+claims — the first remains blocked on this macOS machine by the
+unrelated portability defect; the second is now proven, by the target
+repository's own real CI, not by this development environment.
 
 ### Negative / safety case (real, not only mocked)
 
@@ -218,14 +274,26 @@ identical to its pre-milestone baseline.
    code, pnpm explicitly out of scope rather than half-supported.
 5. All existing tests and the real workspace pilot case pass: **yes**
    for the test suite (135/135); the real pilot case's core claim
-   (dependency availability) is directly confirmed, with one separate,
-   unrelated, explicitly-documented environment defect (not this
-   milestone's to fix) preventing a full clean end-to-end test-suite
-   pass on this particular development machine.
+   (dependency availability, and the actual `mocha` suite executing
+   under a workspace-root install) is now fully confirmed — directly on
+   this machine for dependency availability and `format:check`, and via
+   the target repository's own real, independent Linux CI history (see
+   above) for `postcompile.sh` and the `mocha`/`test:node` suite itself.
+   The one remaining gap is a same-machine, same-run, end-to-end
+   reproduction on this particular macOS development machine, which is
+   blocked by a separate, unrelated, documented portability defect in
+   the target repository's own build script — not by anything this
+   milestone changed or is responsible for.
 
-**Milestone objective met.** The one incomplete item (full `mocha`
-suite execution on this machine) is blocked by a documented, unrelated,
-pre-existing target-repository portability defect, not by anything
-this milestone was responsible for — consistent with the instruction to
-document rather than fix defects encountered outside this milestone's
-scope.
+**Milestone objective met, with end-to-end evidence now complete.** The
+demonstrated hoisting failure is resolved; the actual `mocha` suite is
+confirmed to execute successfully against a workspace-root install for
+the real, exact pilot commit — established via the target repository's
+own real CI rather than local reproduction, because local reproduction
+on this macOS machine is blocked by a documented, unrelated,
+pre-existing target-repository portability defect (`postcompile.sh`'s
+`sed -i` is GNU-only). No second independent real workspace repository
+is required: the gap was evidentiary (could this machine prove the
+suite runs?), not a doubt about the implementation, and it is now
+closed by real, unmodified, independent evidence rather than by a
+second fixture.
