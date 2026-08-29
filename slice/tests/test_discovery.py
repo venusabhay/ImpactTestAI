@@ -808,3 +808,88 @@ def test_intermediate_package_json_without_workspaces_field_is_skipped(tmp_path)
     )
     root = discovery.find_workspace_root(str(tmp_path), "groups/team-a/packages/widgets")
     assert root == ""
+
+
+# ---------------------------------------------------------------------------
+# Validation-command ancestor fallback (see
+# docs/decisions/VALIDATION_ANCESTOR_FALLBACK_DESIGN.md and
+# pilot/reports/2026-08-29-milestone-a-generalization.md, Cases 2/3).
+# Mechanism-level coverage of find_validation_ancestor() itself; its
+# integration into build_validation_decision() (reason text, target_dir
+# wiring, preserved existing behavior) lives in test_analyze_change.py.
+# ---------------------------------------------------------------------------
+
+def test_no_ancestor_has_a_test_script_returns_none(tmp_path):
+    """No component anywhere above the changed one has a "test" script
+    at all -- nothing to fall back to."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(tmp_path / "packages" / "widgets" / "package.json", json.dumps({"name": "widgets", "scripts": {}}))
+    components = discovery.find_components(str(tmp_path))
+    assert discovery.find_validation_ancestor(str(tmp_path), "packages/widgets", components) is None
+
+
+def test_one_level_ancestor_fallback(tmp_path):
+    """The component's immediate parent component (not the ultimate
+    repository root) has a real "test" script -- that nearer ancestor is
+    used."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(
+        tmp_path / "packages" / "frontend" / "package.json",
+        json.dumps({"name": "frontend", "scripts": {"test": "jest"}}),
+    )
+    _write(
+        tmp_path / "packages" / "frontend" / "plugins" / "widgets" / "package.json",
+        json.dumps({"name": "widgets", "scripts": {}}),
+    )
+    components = discovery.find_components(str(tmp_path))
+    ancestor = discovery.find_validation_ancestor(str(tmp_path), "packages/frontend/plugins/widgets", components)
+    assert ancestor == "packages/frontend"
+
+
+def test_repository_root_fallback_when_no_intermediate_ancestor_qualifies(tmp_path):
+    """Real vitejs/vite shape: only the repository root itself has a
+    "test" script; every intermediate ancestor component has none."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "scripts": {"test": "pnpm test-unit"}}))
+    _write(
+        tmp_path / "packages" / "vite" / "package.json",
+        json.dumps({"name": "vite", "scripts": {"build": "rolldown"}}),
+    )
+    components = discovery.find_components(str(tmp_path))
+    ancestor = discovery.find_validation_ancestor(str(tmp_path), "packages/vite", components)
+    assert ancestor == ""  # "" denotes the repository root
+
+
+def test_nearest_ancestor_wins_over_a_more_distant_one_that_also_qualifies(tmp_path):
+    """Both an intermediate ancestor AND the repository root have real
+    "test" scripts -- the NEARER one must be used, not the repository
+    root, even though the root would also technically qualify."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "scripts": {"test": "root-suite"}}))
+    _write(
+        tmp_path / "packages" / "frontend" / "package.json",
+        json.dumps({"name": "frontend", "scripts": {"test": "frontend-suite"}}),
+    )
+    _write(
+        tmp_path / "packages" / "frontend" / "plugins" / "widgets" / "package.json",
+        json.dumps({"name": "widgets", "scripts": {}}),
+    )
+    components = discovery.find_components(str(tmp_path))
+    ancestor = discovery.find_validation_ancestor(str(tmp_path), "packages/frontend/plugins/widgets", components)
+    assert ancestor == "packages/frontend"  # not "" (the root)
+
+
+def test_sibling_component_with_a_test_script_is_never_selected(tmp_path):
+    """A sibling directory (not an ancestor) with its own real "test"
+    script must never be picked just because it exists somewhere in the
+    repository -- only genuine ancestors of the changed component are
+    ever considered."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(
+        tmp_path / "packages" / "widgets" / "package.json",
+        json.dumps({"name": "widgets", "scripts": {}}),
+    )
+    _write(
+        tmp_path / "packages" / "other" / "package.json",
+        json.dumps({"name": "other", "scripts": {"test": "mocha"}}),
+    )
+    components = discovery.find_components(str(tmp_path))
+    assert discovery.find_validation_ancestor(str(tmp_path), "packages/widgets", components) is None

@@ -66,7 +66,7 @@ import discovery
 # report can always be traced to exactly which code produced it -- not
 # just which rules. Independent axis from POLICY_VERSION: the same tool
 # version can run under different policy versions and vice versa.
-TOOL_VERSION = "0.12.0-pilot"
+TOOL_VERSION = "0.13.0-pilot"
 # 0.12.0 (workspace-aware validation installation, no policy change):
 # run_validation()'s "npm install" ran only inside the changed component's
 # own directory -- found, via a fresh pilot round, to leave devDependencies
@@ -935,11 +935,33 @@ def build_validation_decision(repo, change, risk, components):
             with open(pkg_path) as f:
                 pkg = json.load(f)
             has_test_script = "test" in pkg.get("scripts", {})
+        # Validation-command ancestor fallback: a component with no test
+        # script of its own may still have a real, meaningful one at a
+        # workspace-root or repository-root ancestor -- see
+        # docs/decisions/VALIDATION_ANCESTOR_FALLBACK_DESIGN.md and
+        # discovery.find_validation_ancestor(). Only attempted when the
+        # component itself has none; a component with its own valid
+        # local command is completely unaffected by this fallback.
+        validation_dir_rel = svc_dir_rel
+        via_ancestor = None
+        if not has_test_script and svc_dir_rel is not None:
+            via_ancestor = discovery.find_validation_ancestor(repo, svc_dir_rel, components)
+            if via_ancestor is not None:
+                has_test_script = True
+                validation_dir_rel = via_ancestor
         if has_test_script:
-            reason = (
-                f"'{svc}' component's existing test suite is the best available real validation for this change "
-                f"(exists, runs via 'npm test')."
-            )
+            if via_ancestor is not None:
+                ancestor_label = via_ancestor if via_ancestor else "the repository root"
+                reason = (
+                    f"'{svc}' component has no test script of its own; its nearest ancestor with one, "
+                    f"'{ancestor_label}', is the best available real validation for this change "
+                    f"(exists, runs via 'npm test')."
+                )
+            else:
+                reason = (
+                    f"'{svc}' component's existing test suite is the best available real validation for this change "
+                    f"(exists, runs via 'npm test')."
+                )
             if risk["has_cross_service_validation"]:
                 reason += (" This component's test run ALSO includes a real cross-service integration test "
                            "(spawns the actual service as a live process, driven over real HTTP) -- see "
@@ -948,19 +970,22 @@ def build_validation_decision(repo, change, risk, components):
                 reason += (" NOTE: repo-evidence indicates this suite does not import the changed module directly "
                             "(it re-implements its own routes for testing) -- treat a PASS here as a weak signal, "
                             "not confirmation that the changed code path was exercised.")
-            selected.append({
+            entry = {
                 "type": "INTEGRATION_TEST",
                 "target": svc,
-                "target_dir": svc_dir_rel,
+                "target_dir": validation_dir_rel,
                 "command": "npm test",
                 "decision_reason": reason,
-            })
+            }
+            if via_ancestor is not None:
+                entry["validated_via_ancestor"] = via_ancestor or "."
+            selected.append(entry)
         else:
             rejected.append({
                 "type": "INTEGRATION_TEST",
                 "target": svc,
                 "decision_reason": f"No 'test' script found for component '{svc}' "
-                                    f"({'no package.json test script' if svc_dir else 'component root could not be resolved'}).",
+                                    f"({'no package.json test script found in this component or any ancestor directory' if svc_dir else 'component root could not be resolved'}).",
             })
 
     # The validation that would matter most: does a real cross-service test
@@ -1025,6 +1050,7 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             # 'npm test' invocation). Its result is reflected there.
             continue
         svc_dir = os.path.join(repo, v["target_dir"])
+        via_ancestor = v.get("validated_via_ancestor")
         workspace_root = None
         if npm_install:
             # A fresh checkout (e.g. in CI) has no node_modules. This is an
@@ -1074,6 +1100,8 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                 }
                 if workspace_root is not None:
                     outcome["install_workspace_root"] = workspace_root or "."
+                if via_ancestor is not None:
+                    outcome["validated_via_ancestor"] = via_ancestor
                 outcomes.append(outcome)
                 continue
             if install.returncode != 0:
@@ -1087,6 +1115,8 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
                 }
                 if workspace_root is not None:
                     outcome["install_workspace_root"] = workspace_root or "."
+                if via_ancestor is not None:
+                    outcome["validated_via_ancestor"] = via_ancestor
                 outcomes.append(outcome)
                 continue
         try:
@@ -1111,6 +1141,8 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             }
             if workspace_root is not None:
                 outcome["install_workspace_root"] = workspace_root or "."
+            if via_ancestor is not None:
+                outcome["validated_via_ancestor"] = via_ancestor
             outcomes.append(outcome)
         except subprocess.TimeoutExpired:
             outcome = {
@@ -1121,6 +1153,8 @@ def run_validation(repo, node_bin_dir, selected, npm_install=False, validation_t
             }
             if workspace_root is not None:
                 outcome["install_workspace_root"] = workspace_root or "."
+            if via_ancestor is not None:
+                outcome["validated_via_ancestor"] = via_ancestor
             outcomes.append(outcome)
     return outcomes
 
@@ -1269,6 +1303,8 @@ def render_report(change, impact, risk, validation_decision, outcomes, recommend
             lines.append(f"  - install timeout allowed: {o['install_timeout_seconds']}s")
         if "install_workspace_root" in o:
             lines.append(f"  - install ran at workspace root: `{o['install_workspace_root']}`")
+        if "validated_via_ancestor" in o:
+            lines.append(f"  - validated via ancestor component's test script at: `{o['validated_via_ancestor']}`")
     lines.append("")
     for o in outcomes:
         lines.append(f"<details><summary>{o['target']} test output (tail)</summary>\n\n```\n{o['stdout_tail']}\n{o['stderr_tail']}\n```\n</details>\n")

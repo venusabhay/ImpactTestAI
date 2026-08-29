@@ -252,6 +252,73 @@ def find_workspace_root(repo, component_root_dir):
 
 
 # ---------------------------------------------------------------------------
+# Validation-command ancestor fallback (validation-command discovery
+# fallback milestone) -- see
+# docs/decisions/VALIDATION_ANCESTOR_FALLBACK_DESIGN.md.
+#
+# A changed component with no "test" script of its own was previously
+# reported as "no validation available" and escalated, even when a real,
+# meaningful test script exists at an ancestor directory and is what the
+# repository's own real CI actually runs for exactly this kind of change.
+# Real evidence: pilot/reports/2026-08-29-milestone-a-generalization.md,
+# Cases 2 (vitejs/vite) and 3 (apache/superset) -- two independent, real,
+# active repositories where the changed package owns no test script and
+# all real testing is defined only at a workspace-root or repository-root
+# package.json instead.
+#
+# Deliberately independent of find_workspace_root(): that function
+# requires a declared package-manager "workspaces" relationship because
+# redirecting an INSTALL has real side effects (installing the wrong
+# dependencies). Finding an ancestor's TEST SCRIPT worth trying is a
+# much lower-stakes question -- both real repositories above are pnpm or
+# otherwise outside find_workspace_root()'s own declared-membership
+# rule, and a real, correct fallback still exists for them via bare
+# filesystem containment alone.
+# ---------------------------------------------------------------------------
+
+def find_validation_ancestor(repo, component_root_dir, components):
+    """Nearest ancestor component -- by filesystem containment only, not
+    package-manager workspace declaration -- that has its own npm "test"
+    script, for use as a fallback validation target when
+    `component_root_dir` itself has none. `components` is the full,
+    already-discovered component list from find_components(), which is
+    sorted deepest-root-first; filtering it for genuine ancestors of
+    `component_root_dir` and returning the first match therefore
+    naturally returns the NEAREST ancestor with a usable script, not the
+    most distant one -- a more distant ancestor (up to and including the
+    repository root) is only used when no nearer one has a script of its
+    own. A sibling or cousin directory elsewhere in the repository, even
+    one with its own real test script, is never considered: only true
+    ancestors (component_root_dir == that directory or a path beneath
+    it) are examined.
+
+    Returns the ancestor's repo-relative root_dir ("" for the repository
+    root itself) if one is found, else None -- covering both "no
+    ancestor component exists at all" and "every ancestor component
+    exists but none declares a test script" identically, since both mean
+    the same thing here: there is nothing to fall back to, so the caller
+    keeps its existing "no validation available" behavior unchanged."""
+    for c in components:
+        root = c["root_dir"]
+        if root == component_root_dir:
+            continue  # itself, not an ancestor
+        is_ancestor = root == "" or (component_root_dir or "").startswith(root + "/")
+        if not is_ancestor:
+            continue
+        pkg_path = os.path.join(repo, root, "package.json") if root else os.path.join(repo, "package.json")
+        if not os.path.isfile(pkg_path):
+            continue
+        try:
+            with open(pkg_path, "r", errors="ignore") as f:
+                pkg = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if "test" in pkg.get("scripts", {}):
+            return root
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 2. Route discovery (generalizes app.METHOD(...) to any receiver)
 # ---------------------------------------------------------------------------
 

@@ -960,3 +960,144 @@ def test_run_validation_workspace_install_failure_is_inconclusive_not_fabricated
     assert o["result"] != "FAILED"
     assert o["classification"] == "INFRASTRUCTURE (dependency install failed)"
     assert o["install_workspace_root"] == "."
+
+
+# ---------------------------------------------------------------------------
+# Validation-command ancestor fallback (see
+# docs/decisions/VALIDATION_ANCESTOR_FALLBACK_DESIGN.md and
+# pilot/reports/2026-08-29-milestone-a-generalization.md, Cases 2/3:
+# vitejs/vite and apache/superset each have a real changed component with
+# no test script of its own, while a real, ancestor-owned test script --
+# the one their own real CI actually runs -- was never discovered).
+# Mechanism-level ancestor-walk coverage (nearest-wins, sibling exclusion,
+# repository-root fallback) lives in test_discovery.py; these cover
+# build_validation_decision()'s own integration: reason text, target_dir
+# wiring, and that existing behavior is completely unaffected when a
+# component already has a valid local command.
+# ---------------------------------------------------------------------------
+
+def _validation_risk():
+    return {
+        "structural_exposure": {"caller_services": []},
+        "has_cross_service_validation": False,
+        "direct_test_coverage": True,
+    }
+
+
+def test_build_validation_decision_uses_component_local_test_script_unchanged(tmp_path):
+    """Baseline/regression: a component with its own test script is
+    selected exactly as before this milestone -- own directory, no
+    ancestor-fallback fields, unchanged reason wording."""
+    _write(tmp_path / "widgets" / "package.json", json.dumps({"name": "widgets", "scripts": {"test": "jest"}}))
+    components = ac.discovery.find_components(str(tmp_path))
+    change = {"changed_files": ["widgets/index.js"]}
+
+    decision = ac.build_validation_decision(str(tmp_path), change, _validation_risk(), components)
+
+    assert len(decision["selected_validations"]) == 1
+    v = decision["selected_validations"][0]
+    assert v["target"] == "widgets"
+    assert v["target_dir"] == "widgets"
+    assert v["command"] == "npm test"
+    assert "validated_via_ancestor" not in v
+    assert decision["rejected_validations"] == []
+    assert "has no test script of its own" not in v["decision_reason"]
+
+
+def test_build_validation_decision_falls_back_to_nearest_ancestor(tmp_path):
+    """One-level (nearest-ancestor) fallback: the changed component has
+    no test script, but its nearest ancestor component does -- that
+    ancestor's directory and script are selected, and the fallback is
+    disclosed in both the machine-readable field and the reason text."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(
+        tmp_path / "packages" / "frontend" / "package.json",
+        json.dumps({"name": "frontend", "scripts": {"test": "jest"}}),
+    )
+    _write(
+        tmp_path / "packages" / "frontend" / "plugins" / "widgets" / "package.json",
+        json.dumps({"name": "widgets", "scripts": {}}),
+    )
+    components = ac.discovery.find_components(str(tmp_path))
+    change = {"changed_files": ["packages/frontend/plugins/widgets/index.tsx"]}
+
+    decision = ac.build_validation_decision(str(tmp_path), change, _validation_risk(), components)
+
+    assert len(decision["selected_validations"]) == 1
+    v = decision["selected_validations"][0]
+    assert v["target"] == "widgets"  # still attributed to the changed component
+    assert v["target_dir"] == "packages/frontend"  # but runs where the real test script lives
+    assert v["command"] == "npm test"
+    assert v["validated_via_ancestor"] == "packages/frontend"
+    assert "has no test script of its own" in v["decision_reason"]
+    assert "packages/frontend" in v["decision_reason"]
+    assert decision["rejected_validations"] == []
+
+
+def test_build_validation_decision_falls_back_to_repository_root_where_appropriate(tmp_path):
+    """Real vitejs/vite shape: the changed component has no test script,
+    no intermediate ancestor has one either, but the repository root
+    does -- the repository root is used (target_dir == ""), not treated
+    as unavailable."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo", "scripts": {"test": "pnpm test-unit"}}))
+    _write(
+        tmp_path / "packages" / "vite" / "package.json",
+        json.dumps({"name": "vite", "scripts": {"build": "rolldown"}}),
+    )
+    components = ac.discovery.find_components(str(tmp_path))
+    change = {"changed_files": ["packages/vite/src/node/server/pluginContainer.ts"]}
+
+    decision = ac.build_validation_decision(str(tmp_path), change, _validation_risk(), components)
+
+    assert len(decision["selected_validations"]) == 1
+    v = decision["selected_validations"][0]
+    assert v["target"] == "vite"
+    assert v["target_dir"] == ""  # the repository root
+    assert v["validated_via_ancestor"] == "."
+    assert "the repository root" in v["decision_reason"]
+    assert decision["rejected_validations"] == []
+
+
+def test_build_validation_decision_rejects_when_no_ancestor_has_a_test_script(tmp_path):
+    """No applicable ancestor anywhere (including the repository root
+    itself) has a test script -- existing "no validation available"
+    behavior is preserved exactly: nothing selected, a rejection
+    recorded, which final_recommendation() turns into ESCALATE."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(tmp_path / "packages" / "widgets" / "package.json", json.dumps({"name": "widgets", "scripts": {}}))
+    components = ac.discovery.find_components(str(tmp_path))
+    change = {"changed_files": ["packages/widgets/index.js"]}
+
+    decision = ac.build_validation_decision(str(tmp_path), change, _validation_risk(), components)
+
+    assert decision["selected_validations"] == []
+    assert len(decision["rejected_validations"]) == 1
+    r = decision["rejected_validations"][0]
+    assert r["target"] == "widgets"
+    assert "No 'test' script found" in r["decision_reason"]
+
+    outcomes = []
+    result, _ = ac.final_recommendation(_risk(), outcomes, decision)
+    assert result == "ESCALATE"
+
+
+def test_build_validation_decision_does_not_select_a_sibling_components_script(tmp_path):
+    """A sibling component's real test script must never be selected for
+    a changed component just because it exists somewhere in the
+    repository -- only genuine ancestors are eligible. With no genuine
+    ancestor available, this must reject exactly like the no-ancestor
+    case above, not silently borrow the sibling's script."""
+    _write(tmp_path / "package.json", json.dumps({"name": "monorepo"}))
+    _write(tmp_path / "packages" / "widgets" / "package.json", json.dumps({"name": "widgets", "scripts": {}}))
+    _write(
+        tmp_path / "packages" / "other" / "package.json",
+        json.dumps({"name": "other", "scripts": {"test": "mocha"}}),
+    )
+    components = ac.discovery.find_components(str(tmp_path))
+    change = {"changed_files": ["packages/widgets/index.js"]}
+
+    decision = ac.build_validation_decision(str(tmp_path), change, _validation_risk(), components)
+
+    assert decision["selected_validations"] == []
+    assert len(decision["rejected_validations"]) == 1
+    assert decision["rejected_validations"][0]["target"] == "widgets"
