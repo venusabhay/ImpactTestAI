@@ -863,3 +863,100 @@ def test_route_label_composition_regression_fixture_matches_real_pilot_case(tmp_
     assert any(e.endswith("GET /") for e in entities)
     assert any(e.endswith("GET /api/v1") for e in entities)
     assert any(e.endswith("GET /api/v1/emojis") for e in entities)
+
+
+# ---------------------------------------------------------------------------
+# Workspace-aware validation installation (see
+# docs/decisions/WORKSPACE_AWARE_INSTALL_DESIGN.md and
+# pilot/reports/2026-08-29-product-validation-pilot.md, Case 3).
+# Mechanism-level coverage (workspace detection, pattern matching,
+# ambiguous/unsupported cases) lives in tests/test_discovery.py; these
+# cover run_validation()'s own integration: which directory an install
+# actually runs in, and that a genuine install failure there stays a
+# safe INCONCLUSIVE outcome, never a fabricated test FAILED.
+# ---------------------------------------------------------------------------
+
+def test_run_validation_installs_at_workspace_root_when_component_is_a_declared_member(tmp_path):
+    """Positive workspace case, modeled on the real socketio/socket.io
+    reproduction: a component nested under packages/ in a repository
+    whose root package.json declares it as a workspace member gets its
+    dependencies installed AT THE WORKSPACE ROOT, not inside the
+    component alone -- while the validation/test command itself still
+    runs from the component's own directory, unchanged."""
+    (tmp_path / "package.json").write_text(json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    (tmp_path / "packages" / "widgets").mkdir(parents=True)
+    selected = _selected_validation()
+    selected[0]["target_dir"] = "packages/widgets"
+
+    calls = []
+
+    def side_effect(cmd, cwd=None, **kwargs):
+        calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok\n", stderr="")
+
+    with patch("analyze_change.subprocess.run", side_effect=side_effect):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+
+    install_calls = [c for c in calls if c[0] == "npm install"]
+    test_calls = [c for c in calls if c[0] == "npm test"]
+    assert len(install_calls) == 1
+    assert install_calls[0][1] == str(tmp_path)  # installed at the workspace root, not the component
+    assert len(test_calls) == 1
+    assert test_calls[0][1] == str(tmp_path / "packages" / "widgets")  # test still runs in the component
+    assert outcomes[0]["result"] == "PASSED"
+    assert outcomes[0]["install_workspace_root"] == "."  # "." denotes the repo root
+
+
+def test_run_validation_installs_in_component_dir_when_no_workspace_present(tmp_path):
+    """Control / negative-safety case: an ordinary, non-workspace
+    repository must install exactly where it always did -- byte-for-byte
+    the prior behavior, never redirected to some ancestor just because
+    one happens to exist."""
+    (tmp_path / "component").mkdir()
+    selected = _selected_validation()
+
+    calls = []
+
+    def side_effect(cmd, cwd=None, **kwargs):
+        calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok\n", stderr="")
+
+    with patch("analyze_change.subprocess.run", side_effect=side_effect):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+
+    install_calls = [c for c in calls if c[0] == "npm install"]
+    assert len(install_calls) == 1
+    assert install_calls[0][1] == str(tmp_path / "component")
+    assert "install_workspace_root" not in outcomes[0]
+
+
+def test_run_validation_workspace_install_failure_is_inconclusive_not_fabricated(tmp_path):
+    """Failure case: a genuine workspace-install failure (mirroring the
+    real socketio/socket.io reproduction: exit 127, "command not
+    found") remains an honest INCONCLUSIVE/INFRASTRUCTURE outcome --
+    never fabricated as a real test FAILED result, and the validation
+    command is never attempted against dependencies known to be
+    unavailable."""
+    (tmp_path / "package.json").write_text(json.dumps({"name": "monorepo", "workspaces": ["packages/*"]}))
+    (tmp_path / "packages" / "widgets").mkdir(parents=True)
+    selected = _selected_validation()
+    selected[0]["target_dir"] = "packages/widgets"
+
+    failed_install = subprocess.CompletedProcess(
+        args="npm install", returncode=127, stdout="", stderr="sh: prettier: command not found",
+    )
+
+    def side_effect(cmd, cwd=None, **kwargs):
+        if cmd == "npm install":
+            return failed_install
+        raise AssertionError("validation command must not run when workspace install fails")
+
+    with patch("analyze_change.subprocess.run", side_effect=side_effect):
+        outcomes = ac.run_validation(str(tmp_path), "", selected, npm_install=True)
+
+    assert len(outcomes) == 1
+    o = outcomes[0]
+    assert o["result"] == "INCONCLUSIVE"
+    assert o["result"] != "FAILED"
+    assert o["classification"] == "INFRASTRUCTURE (dependency install failed)"
+    assert o["install_workspace_root"] == "."
